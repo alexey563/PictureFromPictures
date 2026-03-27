@@ -2,6 +2,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const targetInput = document.getElementById('targetImage');
     const sourceInput = document.getElementById('sourceImages');
     const cellSizeInput = document.getElementById('cellSize');
+    const blendOpacityInput = document.getElementById('blendOpacity');
     const generateBtn = document.getElementById('generateBtn');
     const statusDiv = document.getElementById('status');
     const progressContainer = document.getElementById('progressContainer');
@@ -25,10 +26,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     generateBtn.addEventListener('click', async () => {
         const cellSize = parseInt(cellSizeInput.value);
-        if (isNaN(cellSize) || cellSize < 5) {
-            alert('Размер ячейки должен быть не меньше 5.');
-            return;
-        }
+        const blendOpacity = parseFloat(blendOpacityInput.value);
 
         let targetImg;
         let sources = [];
@@ -40,9 +38,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (activeTab === 'manual') {
                 if (!targetInput.files[0] || sourceInput.files.length === 0) {
-                    alert('Пожалуйста, выберите файлы.');
-                    generateBtn.disabled = false;
-                    return;
+                    alert('Выберите файлы.');
+                    generateBtn.disabled = false; return;
                 }
                 statusDiv.textContent = 'Обработка ваших фото...';
                 sources = await processSourceImages(sourceInput.files, cellSize);
@@ -50,28 +47,20 @@ document.addEventListener('DOMContentLoaded', () => {
             } else {
                 const targetKw = document.getElementById('targetKeyword').value.trim() || 'nature';
                 const sourceKw = document.getElementById('sourceKeyword').value.trim() || 'cat';
-                const count = Math.min(parseInt(document.getElementById('sourceCount').value) || 20, 50);
+                const count = Math.min(parseInt(document.getElementById('sourceCount').value) || 50, 100);
 
-                statusDiv.textContent = `Загрузка картинок для пула...`;
-                
+                statusDiv.textContent = `Загрузка пула картинок ("${sourceKw}")...`;
                 const urls = [];
                 for (let i = 0; i < count; i++) {
                     const seed = Math.floor(Math.random() * 1000000);
-                    // Используем проверенный формат LoremFlickr через прокси weserv
                     const rawUrl = `https://loremflickr.com/150/150/${encodeURIComponent(sourceKw)}?lock=${seed}`;
                     urls.push(`https://images.weserv.nl/?url=${encodeURIComponent(rawUrl)}&n=-1`);
                 }
-                
                 sources = await processSourceUrlsParallel(urls, cellSize);
                 
-                if (sources.length === 0) {
-                    throw new Error("Не удалось загрузить картинки. Попробуйте другое слово или ручной режим.");
-                }
-
                 statusDiv.textContent = `Загрузка основы ("${targetKw}")...`;
                 const targetRaw = `https://loremflickr.com/800/600/${encodeURIComponent(targetKw)}?random=${Math.random()}`;
-                const targetUrl = `https://images.weserv.nl/?url=${encodeURIComponent(targetRaw)}&n=-1`;
-                targetImg = await loadImageRemote(targetUrl, 20000);
+                targetImg = await loadImageRemote(`https://images.weserv.nl/?url=${encodeURIComponent(targetRaw)}&n=-1`, 20000);
             }
             
             statusDiv.textContent = 'Сборка мозаики...';
@@ -93,8 +82,19 @@ document.addEventListener('DOMContentLoaded', () => {
             for (let y = 0; y < rows; y++) {
                 for (let x = 0; x < cols; x++) {
                     const avgColor = getAverageColor(data, width, x * cellSize, y * cellSize, cellSize);
-                    const bestMatch = findBestMatch(avgColor, sources);
-                    ctx.drawImage(bestMatch.canvas, x * cellSize, y * cellSize, cellSize, cellSize);
+                    const bestMatch = findBestMatchVaried(avgColor, sources, 5); // Выбираем из ТОП-5 случайную
+                    
+                    const posX = x * cellSize;
+                    const posY = y * cellSize;
+
+                    // 1. Отрисовка маленькой картинки
+                    ctx.drawImage(bestMatch.canvas, posX, posY, cellSize, cellSize);
+
+                    // 2. Наложение цвета оригинала (секрет узнаваемости)
+                    if (blendOpacity > 0) {
+                        ctx.fillStyle = `rgba(${avgColor.r}, ${avgColor.g}, ${avgColor.b}, ${blendOpacity})`;
+                        ctx.fillRect(posX, posY, cellSize, cellSize);
+                    }
                     
                     cellsDone++;
                     if (cellsDone % 100 === 0) {
@@ -105,10 +105,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
 
-            statusDiv.textContent = 'Готово! Картинку можно сохранить (ПКМ -> Сохранить как).';
+            statusDiv.textContent = 'Готово! (ПКМ -> Сохранить как)';
             updateProgress(100);
         } catch (error) {
-            console.error("Критическая ошибка:", error);
+            console.error(error);
             statusDiv.textContent = 'Ошибка: ' + error.message;
         } finally {
             generateBtn.disabled = false;
@@ -118,8 +118,6 @@ document.addEventListener('DOMContentLoaded', () => {
     async function processSourceUrlsParallel(urls, size) {
         const pool = [];
         let completed = 0;
-        
-        // Запускаем загрузку небольшими группами по 5, чтобы не злить прокси
         const batchSize = 5;
         for (let i = 0; i < urls.length; i += batchSize) {
             const batch = urls.slice(i, i + batchSize);
@@ -130,13 +128,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     completed++;
                     statusDiv.textContent = `Загружено: ${completed} из ${urls.length}`;
                     updateProgress((completed / urls.length) * 50);
-                } catch (e) {
-                    console.warn("Ошибка загрузки картинки, пропускаем...");
-                    completed++;
-                }
+                } catch (e) { completed++; }
             });
             await Promise.all(promises);
-            // Небольшая пауза между группами
             await new Promise(r => setTimeout(r, 100));
         }
         return pool;
@@ -180,10 +174,7 @@ document.addEventListener('DOMContentLoaded', () => {
         return new Promise((resolve, reject) => {
             const img = new Image();
             img.crossOrigin = "Anonymous";
-            const timeout = setTimeout(() => {
-                img.src = ""; 
-                reject(new Error("Timeout"));
-            }, timeoutMs);
+            const timeout = setTimeout(() => { img.src = ""; reject(new Error("Timeout")); }, timeoutMs);
             img.onload = () => { clearTimeout(timeout); resolve(img); };
             img.onerror = () => { clearTimeout(timeout); reject(new Error("Load Error")); };
             img.src = url;
@@ -212,15 +203,22 @@ document.addEventListener('DOMContentLoaded', () => {
         return { r: r / (count || 1), g: g / (count || 1), b: b / (count || 1) };
     }
 
-    function findBestMatch(targetColor, pool) {
-        let best = pool[0], minDiff = Infinity;
-        for (const item of pool) {
+    // Улучшенный выбор: берем из ТОП-N лучших по цвету случайную картинку
+    function findBestMatchVaried(targetColor, pool, topN = 5) {
+        const itemsWithDiff = pool.map(item => {
             const diff = Math.pow(targetColor.r - item.avgColor.r, 2) +
                          Math.pow(targetColor.g - item.avgColor.g, 2) +
                          Math.pow(targetColor.b - item.avgColor.b, 2);
-            if (diff < minDiff) { minDiff = diff; best = item; }
-        }
-        return best;
+            return { item, diff };
+        });
+
+        // Сортируем по степени схожести
+        itemsWithDiff.sort((a, b) => a.diff - b.diff);
+
+        // Берем случайную из TopN
+        const actualTopN = Math.min(topN, itemsWithDiff.length);
+        const randomIndex = Math.floor(Math.random() * actualTopN);
+        return itemsWithDiff[randomIndex].item;
     }
 
     function updateProgress(percent) {
