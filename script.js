@@ -4,7 +4,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const cellSizeInput = document.getElementById('cellSize');
     const blendOpacityInput = document.getElementById('blendOpacity');
     const renderScaleInput = document.getElementById('renderScale');
+    const keepOriginalInput = document.getElementById('keepOriginalColors');
+    const blendControl = document.getElementById('blendControl');
     const generateBtn = document.getElementById('generateBtn');
+    const downloadBtn = document.getElementById('downloadBtn');
     const statusDiv = document.getElementById('status');
     const progressContainer = document.getElementById('progressContainer');
     const progressBar = document.getElementById('progressBar');
@@ -14,6 +17,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const tabBtns = document.querySelectorAll('.tab-btn');
     const tabContents = document.querySelectorAll('.tab-content');
     let activeTab = 'manual';
+
+    // Show/hide blend control based on checkbox
+    keepOriginalInput.addEventListener('change', () => {
+        blendControl.style.display = keepOriginalInput.checked ? 'none' : 'block';
+    });
 
     tabBtns.forEach(btn => {
         btn.addEventListener('click', () => {
@@ -27,14 +35,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
     generateBtn.addEventListener('click', async () => {
         const cellSize = parseInt(cellSizeInput.value);
-        const blendIntensity = parseFloat(blendOpacityInput.value);
-        const renderScale = parseInt(renderScaleInput.value); // HD множитель
+        const renderScale = parseInt(renderScaleInput.value);
+        const keepOriginal = keepOriginalInput.checked;
+        const blendIntensity = keepOriginal ? 0 : parseFloat(blendOpacityInput.value);
 
         let targetImg;
         let sources = [];
 
         try {
             generateBtn.disabled = true;
+            downloadBtn.style.display = 'none';
             progressContainer.style.display = 'block';
             updateProgress(0);
 
@@ -45,16 +55,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 statusDiv.textContent = 'Обработка ваших фото...';
                 sources = await processSourceImages(sourceInput.files, cellSize * renderScale);
+                targetImg = await loadImage(targetInput.files[0]);
             } else {
                 const targetKw = document.getElementById('targetKeyword').value.trim() || 'nature';
                 const sourceKw = document.getElementById('sourceKeyword').value.trim() || 'cat';
                 const count = Math.min(parseInt(document.getElementById('sourceCount').value) || 100, 300);
 
-                statusDiv.textContent = `Загрузка ${count} уникальных фото...`;
+                statusDiv.textContent = `Загрузка ${count} фото...`;
                 const urls = [];
                 for (let i = 0; i < count; i++) {
                     const seed = Math.floor(Math.random() * 1000000);
-                    const rawUrl = `https://loremflickr.com/300/300/${encodeURIComponent(sourceKw)}?lock=${seed}`;
+                    const rawUrl = `https://loremflickr.com/400/400/${encodeURIComponent(sourceKw)}?lock=${seed}`;
                     urls.push(`https://images.weserv.nl/?url=${encodeURIComponent(rawUrl)}&n=-1`);
                 }
                 sources = await processSourceUrlsParallel(urls, cellSize * renderScale);
@@ -64,12 +75,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 targetImg = await loadImageRemote(`https://images.weserv.nl/?url=${encodeURIComponent(targetRaw)}&n=-1`, 20000);
             }
 
-            if (activeTab === 'manual') targetImg = await loadImage(targetInput.files[0]);
-            
-            statusDiv.textContent = 'Подготовка холста высокого разрешения...';
+            statusDiv.textContent = 'Подготовка Ultra-HD холста...';
             updateProgress(45);
 
-            // Масштабируем холст для HD качества
             const finalWidth = targetImg.width * renderScale;
             const finalHeight = targetImg.height * renderScale;
             const finalCellSize = cellSize * renderScale;
@@ -77,7 +85,6 @@ document.addEventListener('DOMContentLoaded', () => {
             resultCanvas.width = finalWidth;
             resultCanvas.height = finalHeight;
             
-            // Временный холст для анализа оригинала
             const tempCanvas = document.createElement('canvas');
             tempCanvas.width = targetImg.width;
             tempCanvas.height = targetImg.height;
@@ -91,26 +98,20 @@ document.addEventListener('DOMContentLoaded', () => {
             const rows = Math.floor(targetImg.height / cellSize);
             const totalCells = cols * rows;
             let cellsDone = 0;
-
-            // История последних использованных картинок для минимизации повторов рядом
-            let lastUsedIndices = [];
-            const historyLimit = Math.min(sources.length - 1, 15);
+            let lastUsedIds = [];
+            const historyLimit = Math.min(sources.length - 1, 12);
 
             for (let y = 0; y < rows; y++) {
                 for (let x = 0; x < cols; x++) {
                     const avgColor = getAverageColor(originalData, targetImg.width, x * cellSize, y * cellSize, cellSize);
-                    
-                    // Умный выбор: исключаем недавно использованные картинки
-                    const bestMatch = findBestMatchUnique(avgColor, sources, lastUsedIndices, historyLimit);
+                    const bestMatch = findBestMatchUnique(avgColor, sources, lastUsedIds, historyLimit);
                     
                     const posX = x * finalCellSize;
                     const posY = y * finalCellSize;
 
-                    // 1. Отрисовка в HD
                     ctx.drawImage(bestMatch.canvas, posX, posY, finalCellSize, finalCellSize);
 
-                    // 2. Цветокоррекция в HD
-                    if (blendIntensity > 0) {
+                    if (!keepOriginal && blendIntensity > 0) {
                         ctx.save();
                         ctx.globalCompositeOperation = 'color';
                         ctx.globalAlpha = blendIntensity;
@@ -122,14 +123,15 @@ document.addEventListener('DOMContentLoaded', () => {
                     cellsDone++;
                     if (cellsDone % 100 === 0) {
                         updateProgress(45 + (cellsDone / totalCells) * 55);
-                        statusDiv.textContent = `Сборка HD: ${Math.round((cellsDone / totalCells) * 100)}%`;
+                        statusDiv.textContent = `Сборка Ultra HD: ${Math.round((cellsDone / totalCells) * 100)}%`;
                         await new Promise(r => setTimeout(r, 0));
                     }
                 }
             }
 
-            statusDiv.textContent = 'Готово! Нажмите "Сохранить как", чтобы получить HD файл.';
+            statusDiv.textContent = 'Готово! Нажмите кнопку ниже для сохранения.';
             updateProgress(100);
+            downloadBtn.style.display = 'block';
         } catch (error) {
             console.error(error);
             statusDiv.textContent = 'Ошибка: ' + error.message;
@@ -138,19 +140,25 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+    downloadBtn.addEventListener('click', () => {
+        const link = document.createElement('a');
+        link.download = `mosaic_${Date.now()}.png`;
+        link.href = resultCanvas.toDataURL('image/png', 1.0);
+        link.click();
+    });
+
     async function processSourceUrlsParallel(urls, size) {
         const pool = [];
         let completed = 0;
-        const batchSize = 6;
+        const batchSize = 5;
         for (let i = 0; i < urls.length; i += batchSize) {
             const batch = urls.slice(i, i + batchSize);
             const promises = batch.map(async (url, idx) => {
                 try {
                     const img = await loadImageRemote(url, 15000);
-                    // Добавляем только оригинал (убираем повороты по просьбе пользователя)
-                    pool.push(createSourceItem(img, size, i + idx)); 
+                    pool.push(createSourceItem(img, size, i + idx));
                     completed++;
-                    statusDiv.textContent = `Загружено уникальных фото: ${completed}`;
+                    statusDiv.textContent = `Загружено: ${completed} из ${urls.length}`;
                     updateProgress((completed / urls.length) * 45);
                 } catch (e) { completed++; }
             });
@@ -231,10 +239,9 @@ document.addEventListener('DOMContentLoaded', () => {
         return { r: r / (count || 1), g: g / (count || 1), b: b / (count || 1) };
     }
 
-    // Умный выбор: исключаем недавно использованные и ищем Top-10
     function findBestMatchUnique(targetColor, pool, history, historyLimit) {
         const itemsWithDiff = pool
-            .filter(p => !history.includes(p.id)) // Убираем недавние повторы
+            .filter(p => !history.includes(p.id))
             .map(item => {
                 const dr = targetColor.r - item.avgColor.r;
                 const dg = targetColor.g - item.avgColor.g;
@@ -244,11 +251,8 @@ document.addEventListener('DOMContentLoaded', () => {
             });
 
         itemsWithDiff.sort((a, b) => a.diff - b.diff);
+        const best = itemsWithDiff[Math.floor(Math.random() * Math.min(5, itemsWithDiff.length))].item;
         
-        // Берем случайную из Top-10 для живой картинки
-        const best = itemsWithDiff[Math.floor(Math.random() * Math.min(10, itemsWithDiff.length))].item;
-        
-        // Обновляем историю
         history.push(best.id);
         if (history.length > historyLimit) history.shift();
         

@@ -46,18 +46,26 @@
                 <input type="number" id="cellSize" value="15" min="5" max="100">
             </div>
             <div class="input-group">
-                <label for="renderScale">Качество (множитель разрешения):</label>
+                <label for="renderScale">Качество (для печати):</label>
                 <select id="renderScale">
-                    <option value="1">Обычное (быстро)</option>
-                    <option value="2" selected>Высокое (HD)</option>
-                    <option value="3">Максимальное (4K/Печать)</option>
+                    <option value="1">Обычное (экран)</option>
+                    <option value="2">Высокое (HD)</option>
+                    <option value="4" selected>Печать (Ultra HD)</option>
+                    <option value="6">Максимальное (8K / Большой холст)</option>
                 </select>
             </div>
-            <div class="input-group">
+            <div class="input-group-row">
+                <input type="checkbox" id="keepOriginalColors" checked>
+                <label for="keepOriginalColors">Оставлять оригинальные цвета фото</label>
+            </div>
+            <div class="input-group" id="blendControl" style="display:none;">
                 <label for="blendOpacity">Наложение цвета оригинала:</label>
                 <input type="range" id="blendOpacity" min="0" max="0.8" step="0.1" value="0.3">
             </div>
-            <button id="generateBtn">Создать мозаику</button>
+            <div class="button-group">
+                <button id="generateBtn">Создать мозаику</button>
+                <button id="downloadBtn" style="display:none; background-color: #4caf50;">Скачать в HD качество</button>
+            </div>
         </div>
         <div id="status" class="status">Готов к работе.</div>
         <div class="progress-container" id="progressContainer" style="display:none;">
