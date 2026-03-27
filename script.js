@@ -1,7 +1,6 @@
 document.addEventListener('DOMContentLoaded', () => {
     const targetInput = document.getElementById('targetImage');
     const sourceInput = document.getElementById('sourceImages');
-    const aspectRatioInput = document.getElementById('aspectRatio');
     const blendOpacityInput = document.getElementById('blendOpacity');
     const renderScaleInput = document.getElementById('renderScale');
     const keepOriginalInput = document.getElementById('keepOriginalColors');
@@ -36,7 +35,6 @@ document.addEventListener('DOMContentLoaded', () => {
         const renderScale = parseInt(renderScaleInput.value);
         const keepOriginal = keepOriginalInput.checked;
         const blendIntensity = keepOriginal ? 0 : parseFloat(blendOpacityInput.value);
-        const selectedRatio = aspectRatioInput.value;
 
         let targetImgRaw;
         let sources = [];
@@ -54,7 +52,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     generateBtn.disabled = false; return;
                 }
                 statusDiv.textContent = 'Обработка пула...';
-                // Временный размер для обработки, потом подгоним под масштаб
                 sources = await processSourceImages(sourceInput.files, 100); 
                 targetImgRaw = await loadImage(targetInput.files[0]);
             } else {
@@ -76,21 +73,26 @@ document.addEventListener('DOMContentLoaded', () => {
                 targetImgRaw = await loadImageRemote(`https://images.weserv.nl/?url=${encodeURIComponent(targetUrl)}&n=-1`, 20000);
             }
 
-            // 2. Обрезка основы под формат
-            statusDiv.textContent = 'Обрезка под формат...';
-            const targetCanvas = cropToRatio(targetImgRaw, selectedRatio);
-            const targetData = targetCanvas.getContext('2d').getImageData(0, 0, targetCanvas.width, targetCanvas.height).data;
+            // 2. Используем оригинальный холст без обрезки
+            const targetWidth = targetImgRaw.width;
+            const targetHeight = targetImgRaw.height;
+            
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = targetWidth;
+            tempCanvas.height = targetHeight;
+            const tCtx = tempCanvas.getContext('2d');
+            tCtx.drawImage(targetImgRaw, 0, 0);
+            const targetData = tCtx.getImageData(0, 0, targetWidth, targetHeight).data;
 
             // 3. Автоматический расчет ячейки
-            // Хотим примерно 60-80 колонок для хорошего вида
             const cols = Math.max(40, Math.min(120, Math.round(Math.sqrt(sources.length) * 7)));
-            const baseCellSize = Math.floor(targetCanvas.width / cols);
+            const baseCellSize = Math.floor(targetWidth / cols);
             const finalCellSize = baseCellSize * renderScale;
 
             statusDiv.textContent = `Сетка: ${cols} колонок. Подготовка HD холста...`;
             updateProgress(45);
 
-            // Обновляем размер картинок в пуле под финальное качество
+            // Ресайз пула под финальное качество
             for (let s of sources) {
                 const resized = document.createElement('canvas');
                 resized.width = finalCellSize;
@@ -99,12 +101,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 s.canvas = resized;
             }
 
-            resultCanvas.width = targetCanvas.width * renderScale;
-            resultCanvas.height = targetCanvas.height * renderScale;
-            
+            resultCanvas.width = targetWidth * renderScale;
+            resultCanvas.height = targetHeight * renderScale;
             ctx.clearRect(0, 0, resultCanvas.width, resultCanvas.height);
 
-            const rows = Math.floor(targetCanvas.height / baseCellSize);
+            const rows = Math.floor(targetHeight / baseCellSize);
             const totalCells = cols * rows;
             let cellsDone = 0;
             let lastUsedIds = [];
@@ -112,7 +113,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             for (let y = 0; y < rows; y++) {
                 for (let x = 0; x < cols; x++) {
-                    const avgColor = getAverageColor(targetData, targetCanvas.width, x * baseCellSize, y * baseCellSize, baseCellSize);
+                    const avgColor = getAverageColor(targetData, targetWidth, x * baseCellSize, y * baseCellSize, baseCellSize);
                     const bestMatch = findBestMatchUnique(avgColor, sources, lastUsedIds, historyLimit);
                     
                     const posX = x * finalCellSize;
@@ -132,7 +133,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     cellsDone++;
                     if (cellsDone % 100 === 0) {
                         updateProgress(45 + (cellsDone / totalCells) * 55);
-                        statusDiv.textContent = `Сборка Ultra HD: ${Math.round((cellsDone / totalCells) * 100)}%`;
+                        statusDiv.textContent = `Сборка HD: ${Math.round((cellsDone / totalCells) * 100)}%`;
                         await new Promise(r => setTimeout(r, 0));
                     }
                 }
@@ -151,34 +152,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
     downloadBtn.addEventListener('click', () => {
         const link = document.createElement('a');
-        link.download = `mosaic_print_${Date.now()}.png`;
+        link.download = `mosaic_original_${Date.now()}.png`;
         link.href = resultCanvas.toDataURL('image/png', 1.0);
         link.click();
     });
-
-    function cropToRatio(img, ratioStr) {
-        let ratio;
-        if (ratioStr === 'original') ratio = img.width / img.height;
-        else ratio = parseFloat(ratioStr);
-
-        let targetW, targetH;
-        const imgRatio = img.width / img.height;
-
-        if (imgRatio > ratio) {
-            targetH = img.height;
-            targetW = img.height * ratio;
-        } else {
-            targetW = img.width;
-            targetH = img.width / ratio;
-        }
-
-        const canvas = document.createElement('canvas');
-        canvas.width = targetW;
-        canvas.height = targetH;
-        const cCtx = canvas.getContext('2d');
-        cCtx.drawImage(img, (img.width - targetW) / 2, (img.height - targetH) / 2, targetW, targetH, 0, 0, targetW, targetH);
-        return canvas;
-    }
 
     async function processSourceUrlsParallel(urls, size) {
         const pool = [];
