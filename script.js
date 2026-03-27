@@ -7,28 +7,18 @@ document.addEventListener('DOMContentLoaded', () => {
     const blendControl = document.getElementById('blendControl');
     const generateBtn = document.getElementById('generateBtn');
     const downloadBtn = document.getElementById('downloadBtn');
+    const downloadSvgBtn = document.getElementById('downloadSvgBtn');
+    const downloadOptions = document.getElementById('downloadOptions');
     const statusDiv = document.getElementById('status');
     const progressContainer = document.getElementById('progressContainer');
     const progressBar = document.getElementById('progressBar');
     const resultCanvas = document.getElementById('resultCanvas');
     const ctx = resultCanvas.getContext('2d', { willReadFrequently: true });
 
-    const tabBtns = document.querySelectorAll('.tab-btn');
-    const tabContents = document.querySelectorAll('.tab-content');
-    let activeTab = 'manual';
+    let mosaicData = { cols: 0, rows: 0, cellSize: 0, grid: [], sources: [] };
 
     keepOriginalInput.addEventListener('change', () => {
         blendControl.style.display = keepOriginalInput.checked ? 'none' : 'block';
-    });
-
-    tabBtns.forEach(btn => {
-        btn.addEventListener('click', () => {
-            tabBtns.forEach(b => b.classList.remove('active'));
-            tabContents.forEach(c => c.style.display = 'none');
-            btn.classList.add('active');
-            activeTab = btn.dataset.tab;
-            document.getElementById(`${activeTab}-tab`).style.display = 'flex';
-        });
     });
 
     generateBtn.addEventListener('click', async () => {
@@ -41,18 +31,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
         try {
             generateBtn.disabled = true;
-            downloadBtn.style.display = 'none';
+            downloadOptions.style.display = 'none';
             progressContainer.style.display = 'block';
             updateProgress(0);
 
-            // 1. Загрузка пула
             if (activeTab === 'manual') {
                 if (!targetInput.files[0] || sourceInput.files.length === 0) {
                     alert('Выберите файлы.');
                     generateBtn.disabled = false; return;
                 }
                 statusDiv.textContent = 'Обработка пула...';
-                sources = await processSourceImages(sourceInput.files, 100); 
+                sources = await processSourceImages(sourceInput.files, 150); 
                 targetImgRaw = await loadImage(targetInput.files[0]);
             } else {
                 const targetKw = document.getElementById('targetKeyword').value.trim() || 'nature';
@@ -66,40 +55,27 @@ document.addEventListener('DOMContentLoaded', () => {
                     const rawUrl = `https://loremflickr.com/400/400/${encodeURIComponent(sourceKw)}?lock=${seed}`;
                     urls.push(`https://images.weserv.nl/?url=${encodeURIComponent(rawUrl)}&n=-1`);
                 }
-                sources = await processSourceUrlsParallel(urls, 100);
+                sources = await processSourceUrlsParallel(urls, 150);
                 
                 statusDiv.textContent = `Загрузка основы...`;
                 const targetUrl = `https://loremflickr.com/1600/1200/${encodeURIComponent(targetKw)}?random=${Math.random()}`;
                 targetImgRaw = await loadImageRemote(`https://images.weserv.nl/?url=${encodeURIComponent(targetUrl)}&n=-1`, 20000);
             }
 
-            // 2. Используем оригинальный холст без обрезки
             const targetWidth = targetImgRaw.width;
             const targetHeight = targetImgRaw.height;
-            
             const tempCanvas = document.createElement('canvas');
-            tempCanvas.width = targetWidth;
-            tempCanvas.height = targetHeight;
+            tempCanvas.width = targetWidth; tempCanvas.height = targetHeight;
             const tCtx = tempCanvas.getContext('2d');
             tCtx.drawImage(targetImgRaw, 0, 0);
-            const targetData = tCtx.getImageData(0, 0, targetWidth, targetHeight).data;
+            const targetDataRaw = tCtx.getImageData(0, 0, targetWidth, targetHeight).data;
 
-            // 3. Автоматический расчет ячейки
             const cols = Math.max(40, Math.min(120, Math.round(Math.sqrt(sources.length) * 7)));
             const baseCellSize = Math.floor(targetWidth / cols);
             const finalCellSize = baseCellSize * renderScale;
 
-            statusDiv.textContent = `Сетка: ${cols} колонок. Подготовка HD холста...`;
+            statusDiv.textContent = `Сетка: ${cols} колонок. Подготовка Ultra HD...`;
             updateProgress(45);
-
-            // Ресайз пула под финальное качество
-            for (let s of sources) {
-                const resized = document.createElement('canvas');
-                resized.width = finalCellSize;
-                resized.height = finalCellSize;
-                resized.getContext('2d').drawImage(s.canvas, 0, 0, s.canvas.width, s.canvas.height, 0, 0, finalCellSize, finalCellSize);
-                s.canvas = resized;
-            }
 
             resultCanvas.width = targetWidth * renderScale;
             resultCanvas.height = targetHeight * renderScale;
@@ -109,18 +85,31 @@ document.addEventListener('DOMContentLoaded', () => {
             const totalCells = cols * rows;
             let cellsDone = 0;
             let lastUsedIds = [];
-            const historyLimit = Math.min(sources.length - 1, 15);
+            
+            // Сохраняем данные для SVG экспорта
+            mosaicData = { 
+                cols, rows, 
+                cellSize: baseCellSize, 
+                finalCellSize,
+                grid: [], 
+                sources,
+                renderScale,
+                width: targetWidth,
+                height: targetHeight,
+                keepOriginal,
+                blendIntensity
+            };
 
             for (let y = 0; y < rows; y++) {
                 for (let x = 0; x < cols; x++) {
-                    const avgColor = getAverageColor(targetData, targetWidth, x * baseCellSize, y * baseCellSize, baseCellSize);
-                    const bestMatch = findBestMatchUnique(avgColor, sources, lastUsedIds, historyLimit);
+                    const avgColor = getAverageColor(targetDataRaw, targetWidth, x * baseCellSize, y * baseCellSize, baseCellSize);
+                    const bestMatch = findBestMatchUnique(avgColor, sources, lastUsedIds, 15);
                     
                     const posX = x * finalCellSize;
                     const posY = y * finalCellSize;
 
+                    // Отрисовка PNG
                     ctx.drawImage(bestMatch.canvas, posX, posY, finalCellSize, finalCellSize);
-
                     if (!keepOriginal && blendIntensity > 0) {
                         ctx.save();
                         ctx.globalCompositeOperation = 'color';
@@ -129,19 +118,22 @@ document.addEventListener('DOMContentLoaded', () => {
                         ctx.fillRect(posX, posY, finalCellSize, finalCellSize);
                         ctx.restore();
                     }
+
+                    // Сохраняем в сетку для экспорта
+                    mosaicData.grid.push({ x, y, sourceId: bestMatch.id, color: avgColor });
                     
                     cellsDone++;
                     if (cellsDone % 100 === 0) {
                         updateProgress(45 + (cellsDone / totalCells) * 55);
-                        statusDiv.textContent = `Сборка HD: ${Math.round((cellsDone / totalCells) * 100)}%`;
+                        statusDiv.textContent = `Сборка Ultra HD: ${Math.round((cellsDone / totalCells) * 100)}%`;
                         await new Promise(r => setTimeout(r, 0));
                     }
                 }
             }
 
-            statusDiv.textContent = 'Готово! Сохраните HD файл.';
+            statusDiv.textContent = 'Готово! Выберите формат для скачивания.';
             updateProgress(100);
-            downloadBtn.style.display = 'block';
+            downloadOptions.style.display = 'flex';
         } catch (error) {
             console.error(error);
             statusDiv.textContent = 'Ошибка: ' + error.message;
@@ -150,11 +142,64 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+    // Экспорт в SVG (Векторная сетка)
+    downloadSvgBtn.addEventListener('click', () => {
+        statusDiv.textContent = 'Подготовка векторного файла...';
+        
+        let svg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 ${mosaicData.width} ${mosaicData.height}" width="${mosaicData.width * 5}" height="${mosaicData.height * 5}">`;
+        
+        // 1. Секция Defs: Каждая уникальная картинка записывается только ОДИН раз
+        svg += '<defs>';
+        mosaicData.sources.forEach(s => {
+            const dataUrl = s.canvas.toDataURL('image/jpeg', 0.85);
+            svg += `<image id="img-${s.id}" width="${mosaicData.cellSize}" height="${mosaicData.cellSize}" xlink:href="${dataUrl}" />`;
+        });
+        svg += '</defs>';
+
+        // 2. Секция Use: Просто расставляем ссылки на картинки по сетке
+        mosaicData.grid.forEach(cell => {
+            const x = cell.x * mosaicData.cellSize;
+            const y = cell.y * mosaicData.cellSize;
+            svg += `<use xlink:href="#img-${cell.sourceId}" x="${x}" y="${y}" />`;
+            
+            // Если включена цветокоррекция, добавляем полупрозрачные прямоугольники
+            if (!mosaicData.keepOriginal && mosaicData.blendIntensity > 0) {
+                const color = `rgb(${cell.color.r},${cell.color.g},${cell.color.b})`;
+                svg += `<rect x="${x}" y="${y}" width="${mosaicData.cellSize}" height="${mosaicData.cellSize}" fill="${color}" fill-opacity="${mosaicData.blendIntensity}" />`;
+            }
+        });
+
+        svg += '</svg>';
+        
+        const blob = new Blob([svg], { type: 'image/svg+xml' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.download = `mosaic_vector_${Date.now()}.svg`;
+        link.href = url;
+        link.click();
+        statusDiv.textContent = 'Векторный файл скачан!';
+    });
+
     downloadBtn.addEventListener('click', () => {
         const link = document.createElement('a');
-        link.download = `mosaic_original_${Date.now()}.png`;
+        link.download = `mosaic_print_${Date.now()}.png`;
         link.href = resultCanvas.toDataURL('image/png', 1.0);
         link.click();
+    });
+
+    // --- Существующие функции (без изменений) ---
+    const tabBtns = document.querySelectorAll('.tab-btn');
+    const tabContents = document.querySelectorAll('.tab-content');
+    let activeTab = 'manual';
+
+    tabBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+            tabBtns.forEach(b => b.classList.remove('active'));
+            tabContents.forEach(c => c.style.display = 'none');
+            btn.classList.add('active');
+            activeTab = btn.dataset.tab;
+            document.getElementById(`${activeTab}-tab`).style.display = 'flex';
+        });
     });
 
     async function processSourceUrlsParallel(urls, size) {
@@ -192,26 +237,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function createSourceItem(img, size, id) {
         const canvas = document.createElement('canvas');
-        canvas.width = size;
-        canvas.height = size;
+        canvas.width = size; canvas.height = size;
         const sCtx = canvas.getContext('2d');
         const minDim = Math.min(img.width, img.height);
         sCtx.drawImage(img, (img.width - minDim) / 2, (img.height - minDim) / 2, minDim, minDim, 0, 0, size, size);
-        return { 
-            id: id, 
-            canvas: canvas, 
-            avgColor: calculateAverageColor(sCtx.getImageData(0, 0, size, size).data) 
-        };
+        return { id: id, canvas: canvas, avgColor: calculateAverageColor(sCtx.getImageData(0, 0, size, size).data) };
     }
 
     function loadImage(file) {
         return new Promise(resolve => {
             const reader = new FileReader();
-            reader.onload = e => {
-                const img = new Image();
-                img.onload = () => resolve(img);
-                img.src = e.target.result;
-            };
+            reader.onload = e => { const img = new Image(); img.onload = () => resolve(img); img.src = e.target.result; };
             reader.readAsDataURL(file);
         });
     }
@@ -229,9 +265,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function calculateAverageColor(data) {
         let r = 0, g = 0, b = 0;
-        for (let i = 0; i < data.length; i += 4) {
-            r += data[i]; g += data[i + 1]; b += data[i + 2];
-        }
+        for (let i = 0; i < data.length; i += 4) { r += data[i]; g += data[i + 1]; b += data[i + 2]; }
         const count = data.length / 4 || 1;
         return { r: r / count, g: g / count, b: b / count };
     }
@@ -241,9 +275,7 @@ document.addEventListener('DOMContentLoaded', () => {
         for (let y = startY; y < startY + size; y++) {
             for (let x = startX; x < startX + size; x++) {
                 const idx = (y * width + x) * 4;
-                if (idx < data.length) {
-                    r += data[idx]; g += data[idx + 1]; b += data[idx + 2]; count++;
-                }
+                if (idx < data.length) { r += data[idx]; g += data[idx + 1]; b += data[idx + 2]; count++; }
             }
         }
         return { r: r / (count || 1), g: g / (count || 1), b: b / (count || 1) };
@@ -259,17 +291,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 const diff = 0.3 * dr*dr + 0.59 * dg*dg + 0.11 * db*db;
                 return { item, diff };
             });
-
         itemsWithDiff.sort((a, b) => a.diff - b.diff);
         const best = itemsWithDiff[Math.floor(Math.random() * Math.min(5, itemsWithDiff.length))].item;
-        
         history.push(best.id);
         if (history.length > historyLimit) history.shift();
-        
         return best;
     }
 
-    function updateProgress(percent) {
-        progressBar.style.width = percent + '%';
-    }
+    function updateProgress(percent) { progressBar.style.width = percent + '%'; }
 });
