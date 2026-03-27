@@ -26,7 +26,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     generateBtn.addEventListener('click', async () => {
         const cellSize = parseInt(cellSizeInput.value);
-        const blendOpacity = parseFloat(blendOpacityInput.value);
+        const blendIntensity = parseFloat(blendOpacityInput.value); // Интенсивность коррекции
 
         let targetImg;
         let sources = [];
@@ -43,13 +43,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 statusDiv.textContent = 'Обработка ваших фото...';
                 sources = await processSourceImages(sourceInput.files, cellSize);
-                targetImg = await loadImage(targetInput.files[0]);
             } else {
                 const targetKw = document.getElementById('targetKeyword').value.trim() || 'nature';
                 const sourceKw = document.getElementById('sourceKeyword').value.trim() || 'cat';
                 const count = Math.min(parseInt(document.getElementById('sourceCount').value) || 50, 100);
 
-                statusDiv.textContent = `Загрузка пула картинок ("${sourceKw}")...`;
+                statusDiv.textContent = `Загрузка пула картинок...`;
                 const urls = [];
                 for (let i = 0; i < count; i++) {
                     const seed = Math.floor(Math.random() * 1000000);
@@ -58,10 +57,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 sources = await processSourceUrlsParallel(urls, cellSize);
                 
-                statusDiv.textContent = `Загрузка основы ("${targetKw}")...`;
+                statusDiv.textContent = `Загрузка основы...`;
                 const targetRaw = `https://loremflickr.com/800/600/${encodeURIComponent(targetKw)}?random=${Math.random()}`;
                 targetImg = await loadImageRemote(`https://images.weserv.nl/?url=${encodeURIComponent(targetRaw)}&n=-1`, 20000);
             }
+
+            if (activeTab === 'manual') targetImg = await loadImage(targetInput.files[0]);
             
             statusDiv.textContent = 'Сборка мозаики...';
             updateProgress(50);
@@ -82,18 +83,24 @@ document.addEventListener('DOMContentLoaded', () => {
             for (let y = 0; y < rows; y++) {
                 for (let x = 0; x < cols; x++) {
                     const avgColor = getAverageColor(data, width, x * cellSize, y * cellSize, cellSize);
-                    const bestMatch = findBestMatchVaried(avgColor, sources, 5); // Выбираем из ТОП-5 случайную
+                    // Выбираем из ТОП-3, чтобы было разнообразие, но без потери качества
+                    const bestMatch = findBestMatchVaried(avgColor, sources, 3); 
                     
                     const posX = x * cellSize;
                     const posY = y * cellSize;
 
-                    // 1. Отрисовка маленькой картинки
+                    // 1. Отрисовка оригинальной маленькой картинки
                     ctx.drawImage(bestMatch.canvas, posX, posY, cellSize, cellSize);
 
-                    // 2. Наложение цвета оригинала (секрет узнаваемости)
-                    if (blendOpacity > 0) {
-                        ctx.fillStyle = `rgba(${avgColor.r}, ${avgColor.g}, ${avgColor.b}, ${blendOpacity})`;
+                    // 2. Умная цветокоррекция (подстраивание под место)
+                    if (blendIntensity > 0) {
+                        ctx.save();
+                        // Используем режим 'color', который меняет цвет, но сохраняет детали
+                        ctx.globalCompositeOperation = 'color';
+                        ctx.globalAlpha = blendIntensity;
+                        ctx.fillStyle = `rgb(${avgColor.r}, ${avgColor.g}, ${avgColor.b})`;
                         ctx.fillRect(posX, posY, cellSize, cellSize);
+                        ctx.restore();
                     }
                     
                     cellsDone++;
@@ -105,7 +112,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
 
-            statusDiv.textContent = 'Готово! (ПКМ -> Сохранить как)';
+            statusDiv.textContent = 'Готово! Картинка теперь похожа на оригинал.';
             updateProgress(100);
         } catch (error) {
             console.error(error);
@@ -124,7 +131,8 @@ document.addEventListener('DOMContentLoaded', () => {
             const promises = batch.map(async (url) => {
                 try {
                     const img = await loadImageRemote(url, 10000);
-                    pool.push(createSourceItem(img, size));
+                    // Добавляем саму картинку и её зеркальные копии для разнообразия
+                    addSourceItemsToPool(pool, img, size);
                     completed++;
                     statusDiv.textContent = `Загружено: ${completed} из ${urls.length}`;
                     updateProgress((completed / urls.length) * 50);
@@ -141,21 +149,43 @@ document.addEventListener('DOMContentLoaded', () => {
         for (let i = 0; i < files.length; i++) {
             try {
                 const img = await loadImage(files[i]);
-                pool.push(createSourceItem(img, size));
+                addSourceItemsToPool(pool, img, size);
                 updateProgress((i / files.length) * 50);
             } catch (e) { console.warn(e); }
         }
         return pool;
     }
 
-    function createSourceItem(img, size) {
+    // Создает 3 варианта каждой картинки (оригинал + отражения)
+    function addSourceItemsToPool(pool, img, size) {
+        // 1. Оригинал
+        pool.push(createSourceItem(img, size, 'normal'));
+        // 2. Отражение по горизонтали
+        pool.push(createSourceItem(img, size, 'flipH'));
+        // 3. Отражение по вертикали
+        pool.push(createSourceItem(img, size, 'flipV'));
+    }
+
+    function createSourceItem(img, size, transform) {
         const canvas = document.createElement('canvas');
         canvas.width = size;
         canvas.height = size;
         const sCtx = canvas.getContext('2d');
         const minDim = Math.min(img.width, img.height);
-        sCtx.drawImage(img, (img.width - minDim) / 2, (img.height - minDim) / 2, minDim, minDim, 0, 0, size, size);
-        return { canvas, avgColor: calculateAverageColor(sCtx.getImageData(0, 0, size, size).data) };
+        const sx = (img.width - minDim) / 2;
+        const sy = (img.height - minDim) / 2;
+
+        if (transform === 'flipH') {
+            sCtx.translate(size, 0);
+            sCtx.scale(-1, 1);
+        } else if (transform === 'flipV') {
+            sCtx.translate(0, size);
+            sCtx.scale(1, -1);
+        }
+
+        sCtx.drawImage(img, sx, sy, minDim, minDim, 0, 0, size, size);
+        const data = sCtx.getImageData(0, 0, size, size).data;
+        return { canvas, avgColor: calculateAverageColor(data) };
     }
 
     function loadImage(file) {
@@ -203,19 +233,17 @@ document.addEventListener('DOMContentLoaded', () => {
         return { r: r / (count || 1), g: g / (count || 1), b: b / (count || 1) };
     }
 
-    // Улучшенный выбор: берем из ТОП-N лучших по цвету случайную картинку
-    function findBestMatchVaried(targetColor, pool, topN = 5) {
+    function findBestMatchVaried(targetColor, pool, topN = 3) {
         const itemsWithDiff = pool.map(item => {
-            const diff = Math.pow(targetColor.r - item.avgColor.r, 2) +
-                         Math.pow(targetColor.g - item.avgColor.g, 2) +
-                         Math.pow(targetColor.b - item.avgColor.b, 2);
+            // Взвешенное RGB расстояние (лучше для человеческого глаза)
+            const dr = targetColor.r - item.avgColor.r;
+            const dg = targetColor.g - item.avgColor.g;
+            const db = targetColor.b - item.avgColor.b;
+            const diff = 0.3 * dr*dr + 0.59 * dg*dg + 0.11 * db*db;
             return { item, diff };
         });
 
-        // Сортируем по степени схожести
         itemsWithDiff.sort((a, b) => a.diff - b.diff);
-
-        // Берем случайную из TopN
         const actualTopN = Math.min(topN, itemsWithDiff.length);
         const randomIndex = Math.floor(Math.random() * actualTopN);
         return itemsWithDiff[randomIndex].item;
