@@ -41,11 +41,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (activeTab === 'manual') {
                 if (!targetInput.files[0] || sourceInput.files.length === 0) {
-                    alert('Пожалуйста, выберите основное изображение и хотя бы одно изображение для пула.');
+                    alert('Пожалуйста, выберите основное изображение и пул картинок.');
                     generateBtn.disabled = false;
                     return;
                 }
-                statusDiv.textContent = 'Загрузка и обработка изображений пула...';
+                statusDiv.textContent = 'Обработка ваших изображений...';
                 sources = await processSourceImages(sourceInput.files, cellSize);
                 targetImg = await loadImage(targetInput.files[0]);
             } else {
@@ -53,20 +53,20 @@ document.addEventListener('DOMContentLoaded', () => {
                 const sourceKw = document.getElementById('sourceKeyword').value.trim() || 'cats';
                 const count = parseInt(document.getElementById('sourceCount').value) || 30;
 
-                statusDiv.textContent = `Загрузка ${count} фото по запросу "${sourceKw}"...`;
+                statusDiv.textContent = `Параллельная загрузка ${count} фото ("${sourceKw}")...`;
                 const urls = [];
                 for (let i = 0; i < count; i++) {
-                    // Используем разные lock, чтобы картинки были разными
-                    urls.push(`https://loremflickr.com/300/300/${encodeURIComponent(sourceKw)}?lock=${i}`);
+                    // Запрашиваем меньший размер (150x150) для скорости
+                    urls.push(`https://loremflickr.com/150/150/${encodeURIComponent(sourceKw)}?lock=${i}`);
                 }
-                sources = await processSourceUrls(urls, cellSize);
+                sources = await processSourceUrlsParallel(urls, cellSize);
                 
-                statusDiv.textContent = `Загрузка основного фото по запросу "${targetKw}"...`;
+                statusDiv.textContent = `Загрузка основы ("${targetKw}")...`;
                 targetImg = await loadImageRemote(`https://loremflickr.com/800/600/${encodeURIComponent(targetKw)}`);
             }
             
-            statusDiv.textContent = 'Обработка основного изображения...';
-            updateProgress(35);
+            statusDiv.textContent = 'Создание мозаики...';
+            updateProgress(40);
 
             resultCanvas.width = targetImg.width;
             resultCanvas.height = targetImg.height;
@@ -74,7 +74,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const imageData = ctx.getImageData(0, 0, resultCanvas.width, resultCanvas.height);
             const { data, width, height } = imageData;
-
             ctx.clearRect(0, 0, width, height);
 
             const cols = Math.floor(width / cellSize);
@@ -82,18 +81,17 @@ document.addEventListener('DOMContentLoaded', () => {
             const totalCells = cols * rows;
             let cellsDone = 0;
 
+            // Отрисовка мозаики
             for (let y = 0; y < rows; y++) {
                 for (let x = 0; x < cols; x++) {
                     const avgColor = getAverageColor(data, width, x * cellSize, y * cellSize, cellSize);
                     const bestMatch = findBestMatch(avgColor, sources);
-                    
                     ctx.drawImage(bestMatch.canvas, x * cellSize, y * cellSize, cellSize, cellSize);
                     
                     cellsDone++;
-                    if (cellsDone % 50 === 0) {
-                        const progress = 35 + (cellsDone / totalCells) * 65;
-                        updateProgress(progress);
-                        statusDiv.textContent = `Создание мозаики: ${Math.round((cellsDone / totalCells) * 100)}%`;
+                    if (cellsDone % 100 === 0) {
+                        updateProgress(40 + (cellsDone / totalCells) * 60);
+                        statusDiv.textContent = `Прогресс: ${Math.round((cellsDone / totalCells) * 100)}%`;
                         await new Promise(r => setTimeout(r, 0));
                     }
                 }
@@ -109,34 +107,39 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    async function processSourceImages(files, size) {
+    // Оптимизированная параллельная загрузка
+    async function processSourceUrlsParallel(urls, size) {
         const pool = [];
-        const total = files.length;
-        for (let i = 0; i < total; i++) {
-            try {
-                const img = await loadImage(files[i]);
-                pool.push(createSourceItem(img, size));
-                if (i % 5 === 0) updateProgress((i / total) * 30);
-            } catch (e) { console.warn(e); }
+        let loadedCount = 0;
+        
+        // Загружаем пачками по 10 штук для обхода ограничений браузера
+        const batchSize = 10;
+        for (let i = 0; i < urls.length; i += batchSize) {
+            const batch = urls.slice(i, i + batchSize);
+            const promises = batch.map(url => 
+                loadImageRemote(url)
+                    .then(img => {
+                        pool.push(createSourceItem(img, size));
+                        loadedCount++;
+                        updateProgress((loadedCount / urls.length) * 40);
+                    })
+                    .catch(e => console.warn("Пропуск картинки:", e))
+            );
+            await Promise.all(promises);
+            statusDiv.textContent = `Загружено: ${loadedCount} из ${urls.length}`;
         }
+
+        if (pool.length === 0) throw new Error("Не удалось загрузить картинки. Проверьте интернет.");
         return pool;
     }
 
-    async function processSourceUrls(urls, size) {
+    async function processSourceImages(files, size) {
         const pool = [];
-        const total = urls.length;
-        for (let i = 0; i < total; i++) {
-            try {
-                const img = await loadImageRemote(urls[i]);
-                pool.push(createSourceItem(img, size));
-                updateProgress((i / total) * 30);
-                statusDiv.textContent = `Загрузка пула: ${Math.round((i / total) * 100)}%`;
-                await new Promise(r => setTimeout(r, 0));
-            } catch (e) { 
-                console.warn(e); 
-            }
+        for (let i = 0; i < files.length; i++) {
+            const img = await loadImage(files[i]);
+            pool.push(createSourceItem(img, size));
+            updateProgress((i / files.length) * 40);
         }
-        if (pool.length === 0) throw new Error("Не удалось загрузить ни одного изображения для пула.");
         return pool;
     }
 
@@ -146,20 +149,16 @@ document.addEventListener('DOMContentLoaded', () => {
         canvas.height = size;
         const sCtx = canvas.getContext('2d');
         const minDim = Math.min(img.width, img.height);
-        const sx = (img.width - minDim) / 2;
-        const sy = (img.height - minDim) / 2;
-        sCtx.drawImage(img, sx, sy, minDim, minDim, 0, 0, size, size);
-        const data = sCtx.getImageData(0, 0, size, size).data;
-        return { canvas, avgColor: calculateAverageColor(data) };
+        sCtx.drawImage(img, (img.width - minDim) / 2, (img.height - minDim) / 2, minDim, minDim, 0, 0, size, size);
+        return { canvas, avgColor: calculateAverageColor(sCtx.getImageData(0, 0, size, size).data) };
     }
 
     function loadImage(file) {
-        return new Promise((resolve, reject) => {
+        return new Promise(resolve => {
             const reader = new FileReader();
-            reader.onload = (e) => {
+            reader.onload = e => {
                 const img = new Image();
                 img.onload = () => resolve(img);
-                img.onerror = reject;
                 img.src = e.target.result;
             };
             reader.readAsDataURL(file);
@@ -170,19 +169,20 @@ document.addEventListener('DOMContentLoaded', () => {
         return new Promise((resolve, reject) => {
             const img = new Image();
             img.crossOrigin = "Anonymous";
-            img.onload = () => resolve(img);
-            img.onerror = () => reject(new Error(`Не удалось загрузить: ${url}`));
+            const timeout = setTimeout(() => reject(new Error("Timeout")), 10000);
+            img.onload = () => { clearTimeout(timeout); resolve(img); };
+            img.onerror = () => { clearTimeout(timeout); reject(new Error("Error")); };
             img.src = url;
         });
     }
 
     function calculateAverageColor(data) {
         let r = 0, g = 0, b = 0;
-        const count = data.length / 4;
         for (let i = 0; i < data.length; i += 4) {
             r += data[i]; g += data[i + 1]; b += data[i + 2];
         }
-        return { r: Math.round(r / count), g: Math.round(g / count), b: Math.round(b / count) };
+        const count = data.length / 4;
+        return { r: r / count, g: g / count, b: b / count };
     }
 
     function getAverageColor(data, width, startX, startY, size) {
@@ -195,21 +195,18 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
         }
-        return { r: Math.round(r / count), g: Math.round(g / count), b: Math.round(b / count) };
+        return { r: r / count, g: g / count, b: b / count };
     }
 
     function findBestMatch(targetColor, pool) {
-        let bestMatch = pool[0];
-        let minDiff = Infinity;
+        let best = pool[0], minDiff = Infinity;
         for (const item of pool) {
-            const diff = Math.sqrt(
-                Math.pow(targetColor.r - item.avgColor.r, 2) +
-                Math.pow(targetColor.g - item.avgColor.g, 2) +
-                Math.pow(targetColor.b - item.avgColor.b, 2)
-            );
-            if (diff < minDiff) { minDiff = diff; bestMatch = item; }
+            const diff = Math.pow(targetColor.r - item.avgColor.r, 2) +
+                         Math.pow(targetColor.g - item.avgColor.g, 2) +
+                         Math.pow(targetColor.b - item.avgColor.b, 2);
+            if (diff < minDiff) { minDiff = diff; best = item; }
         }
-        return bestMatch;
+        return best;
     }
 
     function updateProgress(percent) {
