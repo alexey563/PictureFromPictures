@@ -18,13 +18,42 @@ body {
 h1 {
     text-align: center;
     color: #4a90e2;
-    margin-bottom: 30px;
+    margin-bottom: 20px;
+}
+
+.tabs {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 15px;
+}
+
+.tab-btn {
+    flex: 1;
+    background-color: #eee;
+    color: #333;
+    border: none;
+    padding: 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: 600;
+}
+
+.tab-btn.active {
+    background-color: #4a90e2;
+    color: white;
+}
+
+.tab-content {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+    margin-bottom: 15px;
 }
 
 .controls {
     display: flex;
     flex-direction: column;
-    gap: 15px;
+    gap: 10px;
     margin-bottom: 25px;
 }
 
@@ -34,14 +63,11 @@ h1 {
     gap: 5px;
 }
 
-label {
-    font-weight: 600;
-}
-
-input[type="file"], input[type="number"] {
+input[type="text"], input[type="file"], input[type="number"] {
     padding: 10px;
     border: 1px solid #ccc;
     border-radius: 6px;
+    font-size: 14px;
 }
 
 button {

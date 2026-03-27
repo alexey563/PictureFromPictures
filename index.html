@@ -10,14 +10,37 @@
     <div class="container">
         <h1>Создать фотомозаику</h1>
         <div class="controls">
-            <div class="input-group">
-                <label for="targetImage">Выберите основное изображение:</label>
-                <input type="file" id="targetImage" accept="image/*">
+            <div class="tabs">
+                <button class="tab-btn active" data-tab="manual">Вручную</button>
+                <button class="tab-btn" data-tab="auto">Автоматически</button>
             </div>
-            <div class="input-group">
-                <label for="sourceImages">Выберите много маленьких изображений (пул):</label>
-                <input type="file" id="sourceImages" accept="image/*" multiple>
+
+            <div id="manual-tab" class="tab-content">
+                <div class="input-group">
+                    <label for="targetImage">Основное изображение:</label>
+                    <input type="file" id="targetImage" accept="image/*">
+                </div>
+                <div class="input-group">
+                    <label for="sourceImages">Пул маленьких изображений:</label>
+                    <input type="file" id="sourceImages" accept="image/*" multiple>
+                </div>
             </div>
+
+            <div id="auto-tab" class="tab-content" style="display:none;">
+                <div class="input-group">
+                    <label for="targetKeyword">Что собрать? (напр. "nature"):</label>
+                    <input type="text" id="targetKeyword" placeholder="Введите тему основного фото">
+                </div>
+                <div class="input-group">
+                    <label for="sourceKeyword">Из чего собрать? (напр. "cats"):</label>
+                    <input type="text" id="sourceKeyword" placeholder="Введите тему для маленьких фото">
+                </div>
+                <div class="input-group">
+                    <label for="sourceCount">Количество фото в пуле (10-100):</label>
+                    <input type="number" id="sourceCount" value="30" min="10" max="100">
+                </div>
+            </div>
+
             <div class="input-group">
                 <label for="cellSize">Размер ячейки (пиксели):</label>
                 <input type="number" id="cellSize" value="20" min="5" max="100">
