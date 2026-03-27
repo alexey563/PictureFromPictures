@@ -40,7 +40,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (activeTab === 'manual') {
                 if (!targetInput.files[0] || sourceInput.files.length === 0) {
-                    alert('Выберите файлы.');
+                    alert('Пожалуйста, выберите файлы.');
                     generateBtn.disabled = false;
                     return;
                 }
@@ -50,28 +50,28 @@ document.addEventListener('DOMContentLoaded', () => {
             } else {
                 const targetKw = document.getElementById('targetKeyword').value.trim() || 'nature';
                 const sourceKw = document.getElementById('sourceKeyword').value.trim() || 'cat';
-                const count = parseInt(document.getElementById('sourceCount').value) || 20;
+                const count = Math.min(parseInt(document.getElementById('sourceCount').value) || 20, 50);
 
-                statusDiv.textContent = `Загрузка пула картинок ("${sourceKw}")...`;
+                statusDiv.textContent = `Загрузка картинок для пула...`;
                 
-                // Используем Unsplash Source - он быстрее и стабильнее
                 const urls = [];
                 for (let i = 0; i < count; i++) {
-                    const randomSig = Math.floor(Math.random() * 100000);
-                    // Проксируем через weserv.nl для обхода CORS и ускорения
-                    const rawUrl = `source.unsplash.com/featured/150x150/?${encodeURIComponent(sourceKw)}&sig=${randomSig}`;
-                    urls.push(`https://images.weserv.nl/?url=${rawUrl}&default=identicon`);
+                    const seed = Math.floor(Math.random() * 1000000);
+                    // Используем проверенный формат LoremFlickr через прокси weserv
+                    const rawUrl = `https://loremflickr.com/150/150/${encodeURIComponent(sourceKw)}?lock=${seed}`;
+                    urls.push(`https://images.weserv.nl/?url=${encodeURIComponent(rawUrl)}&n=-1`);
                 }
                 
                 sources = await processSourceUrlsParallel(urls, cellSize);
                 
                 if (sources.length === 0) {
-                    throw new Error("Не удалось загрузить картинки. Проверьте интернет или попробуйте другое слово (на англ.)");
+                    throw new Error("Не удалось загрузить картинки. Попробуйте другое слово или ручной режим.");
                 }
 
                 statusDiv.textContent = `Загрузка основы ("${targetKw}")...`;
-                const targetRaw = `source.unsplash.com/featured/800x600/?${encodeURIComponent(targetKw)}&sig=${Math.random()}`;
-                targetImg = await loadImageRemote(`https://images.weserv.nl/?url=${targetRaw}`, 15000);
+                const targetRaw = `https://loremflickr.com/800/600/${encodeURIComponent(targetKw)}?random=${Math.random()}`;
+                const targetUrl = `https://images.weserv.nl/?url=${encodeURIComponent(targetRaw)}&n=-1`;
+                targetImg = await loadImageRemote(targetUrl, 20000);
             }
             
             statusDiv.textContent = 'Сборка мозаики...';
@@ -108,33 +108,37 @@ document.addEventListener('DOMContentLoaded', () => {
             statusDiv.textContent = 'Готово! Картинку можно сохранить (ПКМ -> Сохранить как).';
             updateProgress(100);
         } catch (error) {
-            console.error(error);
+            console.error("Критическая ошибка:", error);
             statusDiv.textContent = 'Ошибка: ' + error.message;
         } finally {
             generateBtn.disabled = false;
         }
     });
 
-    // Максимально быстрая параллельная загрузка
     async function processSourceUrlsParallel(urls, size) {
         const pool = [];
         let completed = 0;
         
-        // Запускаем ВСЕ запросы сразу
-        const promises = urls.map(async (url) => {
-            try {
-                const img = await loadImageRemote(url, 8000); // 8 секунд на картинку
-                pool.push(createSourceItem(img, size));
-                completed++;
-                statusDiv.textContent = `Загрузка: ${completed} из ${urls.length} успешно`;
-                updateProgress((completed / urls.length) * 50);
-            } catch (e) {
-                console.warn("Пропуск картинки:", e.message);
-                completed++; // Считаем завершенным, даже если ошибка
-            }
-        });
-
-        await Promise.all(promises);
+        // Запускаем загрузку небольшими группами по 5, чтобы не злить прокси
+        const batchSize = 5;
+        for (let i = 0; i < urls.length; i += batchSize) {
+            const batch = urls.slice(i, i + batchSize);
+            const promises = batch.map(async (url) => {
+                try {
+                    const img = await loadImageRemote(url, 10000);
+                    pool.push(createSourceItem(img, size));
+                    completed++;
+                    statusDiv.textContent = `Загружено: ${completed} из ${urls.length}`;
+                    updateProgress((completed / urls.length) * 50);
+                } catch (e) {
+                    console.warn("Ошибка загрузки картинки, пропускаем...");
+                    completed++;
+                }
+            });
+            await Promise.all(promises);
+            // Небольшая пауза между группами
+            await new Promise(r => setTimeout(r, 100));
+        }
         return pool;
     }
 
@@ -172,7 +176,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    function loadImageRemote(url, timeoutMs = 10000) {
+    function loadImageRemote(url, timeoutMs = 15000) {
         return new Promise((resolve, reject) => {
             const img = new Image();
             img.crossOrigin = "Anonymous";
