@@ -9,7 +9,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const resultCanvas = document.getElementById('resultCanvas');
     const ctx = resultCanvas.getContext('2d', { willReadFrequently: true });
 
-    // Логика переключения вкладок
     const tabBtns = document.querySelectorAll('.tab-btn');
     const tabContents = document.querySelectorAll('.tab-content');
     let activeTab = 'manual';
@@ -27,12 +26,12 @@ document.addEventListener('DOMContentLoaded', () => {
     generateBtn.addEventListener('click', async () => {
         const cellSize = parseInt(cellSizeInput.value);
         if (isNaN(cellSize) || cellSize < 5) {
-            alert('Размер ячейки должен быть числом не меньше 5.');
+            alert('Размер ячейки должен быть не меньше 5.');
             return;
         }
 
         let targetImg;
-        let sources;
+        let sources = [];
 
         try {
             generateBtn.disabled = true;
@@ -41,32 +40,33 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (activeTab === 'manual') {
                 if (!targetInput.files[0] || sourceInput.files.length === 0) {
-                    alert('Пожалуйста, выберите основное изображение и пул картинок.');
+                    alert('Выберите файлы.');
                     generateBtn.disabled = false;
                     return;
                 }
-                statusDiv.textContent = 'Обработка ваших изображений...';
+                statusDiv.textContent = 'Обработка ваших фото...';
                 sources = await processSourceImages(sourceInput.files, cellSize);
                 targetImg = await loadImage(targetInput.files[0]);
             } else {
                 const targetKw = document.getElementById('targetKeyword').value.trim() || 'nature';
-                const sourceKw = document.getElementById('sourceKeyword').value.trim() || 'cats';
-                const count = parseInt(document.getElementById('sourceCount').value) || 30;
+                const sourceKw = document.getElementById('sourceKeyword').value.trim() || 'cat';
+                const count = parseInt(document.getElementById('sourceCount').value) || 20;
 
-                statusDiv.textContent = `Параллельная загрузка ${count} фото ("${sourceKw}")...`;
+                statusDiv.textContent = `Подготовка к загрузке ${count} фото...`;
                 const urls = [];
                 for (let i = 0; i < count; i++) {
-                    // Запрашиваем меньший размер (150x150) для скорости
-                    urls.push(`https://loremflickr.com/150/150/${encodeURIComponent(sourceKw)}?lock=${i}`);
+                    urls.push(`https://loremflickr.com/150/150/${encodeURIComponent(sourceKw)}?lock=${i + Math.floor(Math.random() * 1000)}`);
                 }
-                sources = await processSourceUrlsParallel(urls, cellSize);
+                sources = await processSourceUrlsRobust(urls, cellSize);
                 
                 statusDiv.textContent = `Загрузка основы ("${targetKw}")...`;
                 targetImg = await loadImageRemote(`https://loremflickr.com/800/600/${encodeURIComponent(targetKw)}`);
             }
             
+            if (sources.length === 0) throw new Error("Не удалось загрузить ни одного изображения для пула.");
+
             statusDiv.textContent = 'Создание мозаики...';
-            updateProgress(40);
+            updateProgress(45);
 
             resultCanvas.width = targetImg.width;
             resultCanvas.height = targetImg.height;
@@ -81,7 +81,6 @@ document.addEventListener('DOMContentLoaded', () => {
             const totalCells = cols * rows;
             let cellsDone = 0;
 
-            // Отрисовка мозаики
             for (let y = 0; y < rows; y++) {
                 for (let x = 0; x < cols; x++) {
                     const avgColor = getAverageColor(data, width, x * cellSize, y * cellSize, cellSize);
@@ -90,14 +89,14 @@ document.addEventListener('DOMContentLoaded', () => {
                     
                     cellsDone++;
                     if (cellsDone % 100 === 0) {
-                        updateProgress(40 + (cellsDone / totalCells) * 60);
+                        updateProgress(45 + (cellsDone / totalCells) * 55);
                         statusDiv.textContent = `Прогресс: ${Math.round((cellsDone / totalCells) * 100)}%`;
                         await new Promise(r => setTimeout(r, 0));
                     }
                 }
             }
 
-            statusDiv.textContent = 'Готово!';
+            statusDiv.textContent = 'Готово! Можно сохранить картинку (ПКМ -> Сохранить как).';
             updateProgress(100);
         } catch (error) {
             console.error(error);
@@ -107,38 +106,35 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // Оптимизированная параллельная загрузка
-    async function processSourceUrlsParallel(urls, size) {
+    // Самая надежная загрузка: по одной, но с мгновенным пропуском ошибок
+    async function processSourceUrlsRobust(urls, size) {
         const pool = [];
-        let loadedCount = 0;
+        let successCount = 0;
         
-        // Загружаем пачками по 10 штук для обхода ограничений браузера
-        const batchSize = 10;
-        for (let i = 0; i < urls.length; i += batchSize) {
-            const batch = urls.slice(i, i + batchSize);
-            const promises = batch.map(url => 
-                loadImageRemote(url)
-                    .then(img => {
-                        pool.push(createSourceItem(img, size));
-                        loadedCount++;
-                        updateProgress((loadedCount / urls.length) * 40);
-                    })
-                    .catch(e => console.warn("Пропуск картинки:", e))
-            );
-            await Promise.all(promises);
-            statusDiv.textContent = `Загружено: ${loadedCount} из ${urls.length}`;
+        for (let i = 0; i < urls.length; i++) {
+            statusDiv.textContent = `Загрузка: ${i + 1} из ${urls.length} (Успешно: ${successCount})`;
+            try {
+                const img = await loadImageRemote(urls[i]);
+                pool.push(createSourceItem(img, size));
+                successCount++;
+            } catch (e) {
+                console.warn(`Пропуск ${urls[i]}: ${e.message}`);
+            }
+            updateProgress(((i + 1) / urls.length) * 40);
+            // Небольшая пауза, чтобы не спамить сервер
+            await new Promise(r => setTimeout(r, 50));
         }
-
-        if (pool.length === 0) throw new Error("Не удалось загрузить картинки. Проверьте интернет.");
         return pool;
     }
 
     async function processSourceImages(files, size) {
         const pool = [];
         for (let i = 0; i < files.length; i++) {
-            const img = await loadImage(files[i]);
-            pool.push(createSourceItem(img, size));
-            updateProgress((i / files.length) * 40);
+            try {
+                const img = await loadImage(files[i]);
+                pool.push(createSourceItem(img, size));
+                updateProgress(((i + 1) / files.length) * 40);
+            } catch (e) { console.warn(e); }
         }
         return pool;
     }
@@ -150,15 +146,17 @@ document.addEventListener('DOMContentLoaded', () => {
         const sCtx = canvas.getContext('2d');
         const minDim = Math.min(img.width, img.height);
         sCtx.drawImage(img, (img.width - minDim) / 2, (img.height - minDim) / 2, minDim, minDim, 0, 0, size, size);
-        return { canvas, avgColor: calculateAverageColor(sCtx.getImageData(0, 0, size, size).data) };
+        const data = sCtx.getImageData(0, 0, size, size).data;
+        return { canvas, avgColor: calculateAverageColor(data) };
     }
 
     function loadImage(file) {
-        return new Promise(resolve => {
+        return new Promise((resolve, reject) => {
             const reader = new FileReader();
             reader.onload = e => {
                 const img = new Image();
                 img.onload = () => resolve(img);
+                img.onerror = reject;
                 img.src = e.target.result;
             };
             reader.readAsDataURL(file);
@@ -169,9 +167,12 @@ document.addEventListener('DOMContentLoaded', () => {
         return new Promise((resolve, reject) => {
             const img = new Image();
             img.crossOrigin = "Anonymous";
-            const timeout = setTimeout(() => reject(new Error("Timeout")), 10000);
+            const timeout = setTimeout(() => {
+                img.src = ""; // Останавливаем загрузку
+                reject(new Error("Timeout"));
+            }, 5000); // Ждем максимум 5 секунд
             img.onload = () => { clearTimeout(timeout); resolve(img); };
-            img.onerror = () => { clearTimeout(timeout); reject(new Error("Error")); };
+            img.onerror = () => { clearTimeout(timeout); reject(new Error("CORS/Load Error")); };
             img.src = url;
         });
     }
@@ -181,7 +182,7 @@ document.addEventListener('DOMContentLoaded', () => {
         for (let i = 0; i < data.length; i += 4) {
             r += data[i]; g += data[i + 1]; b += data[i + 2];
         }
-        const count = data.length / 4;
+        const count = data.length / 4 || 1;
         return { r: r / count, g: g / count, b: b / count };
     }
 
@@ -195,7 +196,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
         }
-        return { r: r / count, g: g / count, b: b / count };
+        return { r: r / (count || 1), g: g / (count || 1), b: b / (count || 1) };
     }
 
     function findBestMatch(targetColor, pool) {
