@@ -181,10 +181,28 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     downloadBtn.addEventListener('click', () => {
-        const link = document.createElement('a');
-        link.download = `mosaic_print_${Date.now()}.png`;
-        link.href = resultCanvas.toDataURL('image/png', 1.0);
-        link.click();
+        statusDiv.textContent = 'Подготовка файла PNG (это может занять время)...';
+        downloadBtn.disabled = true;
+
+        resultCanvas.toBlob((blob) => {
+            if (!blob) {
+                statusDiv.textContent = 'Ошибка: не удалось создать файл. Попробуйте уменьшить качество.';
+                downloadBtn.disabled = false;
+                return;
+            }
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.download = `mosaic_print_${Date.now()}.png`;
+            link.href = url;
+            link.click();
+            
+            // Даем время на запуск скачивания перед очисткой памяти
+            setTimeout(() => {
+                URL.revokeObjectURL(url);
+                statusDiv.textContent = 'Файл PNG успешно скачан!';
+                downloadBtn.disabled = false;
+            }, 1000);
+        }, 'image/png');
     });
 
     // --- Существующие функции (без изменений) ---
