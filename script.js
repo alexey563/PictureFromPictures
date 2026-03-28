@@ -17,6 +17,30 @@ document.addEventListener('DOMContentLoaded', () => {
 
     let mosaicData = { cols: 0, rows: 0, cellSize: 0, grid: [], sources: [] };
 
+    // Очистка при загрузке (чтобы не оставалось старых данных)
+    function resetApp() {
+        targetInput.value = "";
+        sourceInput.value = "";
+        document.getElementById('targetKeyword').value = "";
+        document.getElementById('sourceKeyword').value = "";
+        document.getElementById('sourceCount').value = 100;
+        renderScaleInput.value = 4;
+        keepOriginalInput.checked = true;
+        blendOpacityInput.value = 0.3;
+        blendControl.style.display = 'none';
+        
+        statusDiv.textContent = 'Готов к работе.';
+        progressContainer.style.display = 'none';
+        progressBar.style.width = '0%';
+        downloadOptions.style.display = 'none';
+        
+        ctx.clearRect(0, 0, resultCanvas.width, resultCanvas.height);
+        resultCanvas.width = 0;
+        resultCanvas.height = 0;
+    }
+
+    resetApp();
+
     keepOriginalInput.addEventListener('change', () => {
         blendControl.style.display = keepOriginalInput.checked ? 'none' : 'block';
     });
