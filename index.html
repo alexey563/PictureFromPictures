@@ -78,8 +78,12 @@
             <hr>
             <h2>Галерея результатов</h2>
             <div class="admin-controls">
-                <label for="userFileUpload" class="admin-btn">Загрузить файл (PNG/SVG)</label>
-                <input type="file" id="userFileUpload" accept=".png, .svg" style="display:none;">
+                <label for="userFileUpload" class="admin-btn">Добавить в галерею</label>
+                <input type="file" id="userFileUpload" accept=".png, .svg, .jpg, .jpeg" style="display:none;">
+                
+                <button id="exportGallery" class="admin-btn" style="background-color: #607d8b;">Сохранить архив (.json)</button>
+                <label for="importGalleryInput" class="admin-btn" style="background-color: #9e9e9e;">Открыть архив</label>
+                <input type="file" id="importGalleryInput" accept=".json" style="display:none;">
             </div>
             <div id="uploadedResultsList" class="results-list">
                 <p class="empty-msg">Нет загруженных результатов.</p>

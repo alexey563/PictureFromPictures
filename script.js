@@ -29,19 +29,15 @@ document.addEventListener('DOMContentLoaded', () => {
     const zoomOutBtn = document.getElementById('zoomOut');
     const downloadOriginalBtn = document.getElementById('downloadOriginal');
     
-    // --- Настройка Supabase ---
-    const SUPABASE_URL = 'https://thfeqjkabagcqngvvrke.supabase.co'; 
-    const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRoZmVxamthYmFnY3FuZ3Z2cmtlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ3ODA5MzEsImV4cCI6MjA5MDM1NjkzMX0.udSMrieaiknVSnduIMUbyIUb6Xk4URwaEEuAmHuKZ7U'; 
-    let supabase = null;
+    // --- Новая локальная БД (IndexedDB) для хранения 300MB+ файлов ---
+    let db;
+    const request = indexedDB.open("MosaicGallery", 1);
+    request.onupgradeneeded = e => {
+        db = e.target.result;
+        db.createObjectStore("gallery", { keyPath: "id" });
+    };
+    request.onsuccess = e => { db = e.target.result; loadFromLocal(); };
 
-    try {
-        if (SUPABASE_KEY && SUPABASE_KEY.length > 50) {
-            supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-        }
-    } catch (e) {
-        console.error("Supabase init error:", e);
-    }
-    
     let uploadedResults = [];
     const ADMIN_PASSWORD = "admin";
     let currentZoom = 1;
@@ -52,78 +48,49 @@ document.addEventListener('DOMContentLoaded', () => {
             adminSection.style.display = 'block';
             adminPassword.blur();
             adminPassword.value = "";
-            if (!supabase) {
-                alert("Ошибка: БД не настроена. Вставьте длинный 'anon public' ключ в script.js");
-                return;
-            }
-            statusDiv.textContent = "Синхронизация с облаком...";
-            await syncWithCloud();
+            renderUploadedResults();
         } else {
             adminSection.style.display = 'none';
         }
     });
 
-    // Загрузка файла через Storage (чтобы не было Out of Memory)
+    // Загрузка файла в локальную БД
     fileUploadInput.addEventListener('change', async (e) => {
         const file = e.target.files[0];
-        if (!file || !supabase) return;
+        if (!file || !db) return;
 
-        try {
-            statusDiv.textContent = "Загрузка файла в хранилище...";
-            const fileExt = file.name.split('.').pop();
-            const fileName = `${Date.now()}.${fileExt}`;
-            const filePath = `${fileName}`;
-
-            // 1. Загружаем сам файл в бакет 'mosaics'
-            const { data: uploadData, error: uploadError } = await supabase.storage
-                .from('mosaics')
-                .upload(filePath, file);
-
-            if (uploadError) throw uploadError;
-
-            // 2. Получаем публичную ссылку
-            const { data: { publicUrl } } = supabase.storage
-                .from('mosaics')
-                .getPublicUrl(filePath);
-
-            // 3. Сохраняем ссылку в таблицу
-            statusDiv.textContent = "Сохранение записи в таблицу...";
-            const { error: dbError } = await supabase
-                .from('mosaic_results')
-                .insert([{ file_name: file.name, data_url: publicUrl, rating: 0 }]);
-
-            if (dbError) throw dbError;
-
-            await syncWithCloud();
-            statusDiv.textContent = "Успешно загружено!";
-        } catch (error) {
-            console.error(error);
-            alert("Ошибка: " + (error.message || "Не удалось загрузить. Проверьте, создан ли бакет 'mosaics' и открыты ли права (Policies)."));
-        } finally {
-            fileUploadInput.value = "";
-        }
+        statusDiv.textContent = "Сохранение в локальное хранилище...";
+        const reader = new FileReader();
+        reader.onload = async (event) => {
+            const id = Date.now();
+            const dataUrl = event.target.result;
+            const thumbUrl = await createThumbnail(file, 300);
+            
+            const item = { id, dataUrl, thumbUrl, fileName: file.name, rating: 0 };
+            const tx = db.transaction("gallery", "readwrite");
+            tx.objectStore("gallery").add(item);
+            tx.oncomplete = () => {
+                loadFromLocal();
+                statusDiv.textContent = "Успешно добавлено!";
+            };
+        };
+        reader.readAsDataURL(file);
     });
 
-    async function syncWithCloud() {
-        if (!supabase) {
-            statusDiv.textContent = "БД не настроена. Используйте URL/Ключ в коде.";
-            return;
-        }
-        const { data, error } = await supabase
-            .from('mosaic_results')
-            .select('*')
-            .order('created_at', { ascending: false });
-        
-        if (!error) {
-            uploadedResults = data;
+    async function loadFromLocal() {
+        if (!db) return;
+        const tx = db.transaction("gallery", "readonly");
+        const store = tx.objectStore("gallery");
+        const request = store.getAll();
+        request.onsuccess = () => {
+            uploadedResults = request.result;
             renderUploadedResults();
-            statusDiv.textContent = "Данные обновлены из облака.";
-        }
+        };
     }
 
     function renderUploadedResults() {
         if (uploadedResults.length === 0) {
-            resultsList.innerHTML = '<p class="empty-msg">Нет загруженных результатов.</p>';
+            resultsList.innerHTML = '<p class="empty-msg">В галерее пока пусто.</p>';
             return;
         }
 
@@ -132,10 +99,10 @@ document.addEventListener('DOMContentLoaded', () => {
             const div = document.createElement('div');
             div.className = 'result-item';
             div.innerHTML = `
-                <img src="${item.data_url}" alt="Preview" onclick="openFullscreen('${item.data_url}')">
-                <div class="item-name" style="font-size: 0.7rem; margin-bottom: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${item.file_name}</div>
+                <img src="${item.thumbUrl}" alt="Preview" onclick="openFullscreen('${item.dataUrl}')">
+                <div class="item-name" style="font-size: 0.7rem; margin-bottom: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${item.fileName}</div>
                 <div class="item-actions">
-                    <span class="rate-btn" onclick="rateItem(${item.id}, ${item.rating})">★ ${item.rating}</span>
+                    <span class="rate-btn" onclick="rateItem(${item.id})">★ ${item.rating}</span>
                     <button class="delete-btn" onclick="deleteItem(${item.id})">Удалить</button>
                 </div>
             `;
@@ -143,7 +110,55 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // Modal Logic (без изменений)
+    // Экспорт всей галереи в один файл (JSON)
+    document.getElementById('exportGallery').onclick = () => {
+        const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(uploadedResults));
+        const downloadAnchorNode = document.createElement('a');
+        downloadAnchorNode.setAttribute("href", dataStr);
+        downloadAnchorNode.setAttribute("download", "mosaic_gallery_backup.json");
+        document.body.appendChild(downloadAnchorNode);
+        downloadAnchorNode.click();
+        downloadAnchorNode.remove();
+    };
+
+    // Импорт галереи из файла
+    document.getElementById('importGalleryInput').onchange = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            try {
+                const importedData = JSON.parse(event.target.result);
+                const tx = db.transaction("gallery", "readwrite");
+                const store = tx.objectStore("gallery");
+                importedData.forEach(item => store.put(item));
+                tx.oncomplete = () => {
+                    loadFromLocal();
+                    alert("Галерея успешно импортирована!");
+                };
+            } catch (err) { alert("Ошибка при чтении файла архива."); }
+        };
+        reader.readAsText(file);
+    };
+
+    async function createThumbnail(file, size) {
+        return new Promise((resolve) => {
+            const img = new Image();
+            img.onload = () => {
+                const canvas = document.createElement('canvas');
+                const scale = size / Math.max(img.width, img.height);
+                canvas.width = img.width * scale;
+                canvas.height = img.height * scale;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                resolve(canvas.toDataURL('image/jpeg', 0.7));
+            };
+            img.src = URL.createObjectURL(file);
+        });
+    }
+
+    // Modal Logic (zoom, fullscreen)
     window.openFullscreen = (src) => {
         modalImg.src = src;
         modal.style.display = "block";
@@ -171,24 +186,22 @@ document.addEventListener('DOMContentLoaded', () => {
         link.click();
     };
 
-    // Global Actions в БД
-    window.rateItem = async (id, currentRating) => {
-        if (!supabase) return;
-        const { error } = await supabase
-            .from('mosaic_results')
-            .update({ rating: currentRating + 1 })
-            .eq('id', id);
-        if (!error) await syncWithCloud();
+    // Actions
+    window.rateItem = (id) => {
+        const item = uploadedResults.find(i => i.id === id);
+        if (item) {
+            item.rating++;
+            const tx = db.transaction("gallery", "readwrite");
+            tx.objectStore("gallery").put(item);
+            tx.oncomplete = () => loadFromLocal();
+        }
     };
 
-    window.deleteItem = async (id) => {
-        if (!supabase) return;
-        if (confirm("Удалить этот результат из облака навсегда?")) {
-            const { error } = await supabase
-                .from('mosaic_results')
-                .delete()
-                .eq('id', id);
-            if (!error) await syncWithCloud();
+    window.deleteItem = (id) => {
+        if (confirm("Удалить это из вашей локальной галереи?")) {
+            const tx = db.transaction("gallery", "readwrite");
+            tx.objectStore("gallery").delete(id);
+            tx.oncomplete = () => loadFromLocal();
         }
     };
 
