@@ -246,45 +246,78 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
-    // Экспорт / Импорт
+    // --- Экспорт / Импорт через ZIP (Решает проблему Out of Memory) ---
     document.getElementById('exportGallery').onclick = async () => {
-        statusDiv.textContent = "Сборка архива... Подождите.";
-        const exportData = [];
+        if (uploadedResults.length === 0) return alert("Галерея пуста");
+        
+        statusDiv.textContent = "Создание ZIP-архива... Подождите.";
+        const zip = new JSZip();
+        const metadata = [];
+
         for (const item of uploadedResults) {
-            const reader = new FileReader();
-            const base64 = await new Promise(r => {
-                reader.onload = e => r(e.target.result);
-                reader.readAsDataURL(item.file instanceof Blob ? item.file : new Blob([item.file]));
+            const fileExt = item.fileName.split('.').pop();
+            const storageName = `${item.id}.${fileExt}`;
+            
+            // Добавляем саму картинку в ZIP как бинарный файл
+            zip.file(`images/${storageName}`, item.file);
+            
+            // Сохраняем метаданные (имя, рейтинг, превью)
+            metadata.push({
+                id: item.id,
+                fileName: item.fileName,
+                rating: item.rating,
+                thumbUrl: item.thumbUrl,
+                storageName: storageName
             });
-            exportData.push({ ...item, file: base64 });
         }
-        const blob = new Blob([JSON.stringify(exportData)], { type: "application/json" });
+
+        zip.file("metadata.json", JSON.stringify(metadata));
+
+        const content = await zip.generateAsync({ type: "blob" });
         const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob); a.download = "mosaic_backup.json";
+        a.href = URL.createObjectURL(content);
+        a.download = `mosaic_gallery_${Date.now()}.zip`;
         a.click();
-        statusDiv.textContent = "Готово.";
+        statusDiv.textContent = "Архив ZIP успешно создан.";
     };
 
-    document.getElementById('importGalleryInput').onchange = (e) => {
+    document.getElementById('importGalleryInput').onchange = async (e) => {
         const file = e.target.files[0];
         if (!file) return;
-        const reader = new FileReader();
-        reader.onload = async (event) => {
-            try {
-                const data = JSON.parse(event.target.result);
-                const tx = db.transaction("gallery", "readwrite");
-                const store = tx.objectStore("gallery");
-                for (const item of data) {
-                    if (typeof item.file === "string") {
-                        const res = await fetch(item.file);
-                        item.file = await res.blob();
-                    }
-                    store.put(item);
-                }
-                tx.oncomplete = () => { loadFromLocal(); alert("Импорт завершен!"); };
-            } catch (err) { alert("Ошибка файла."); }
-        };
-        reader.readAsText(file);
+
+        statusDiv.textContent = "Распаковка архива...";
+        try {
+            const zip = await JSZip.loadAsync(file);
+            const metadataFile = await zip.file("metadata.json").async("string");
+            const metadata = JSON.parse(metadataFile);
+
+            const tx = db.transaction("gallery", "readwrite");
+            const store = tx.objectStore("gallery");
+
+            for (const item of metadata) {
+                statusDiv.textContent = `Импорт: ${item.fileName}...`;
+                const imageFile = await zip.file(`images/${item.storageName}`).async("blob");
+                
+                const entry = {
+                    id: item.id,
+                    fileName: item.fileName,
+                    rating: item.rating,
+                    thumbUrl: item.thumbUrl,
+                    file: imageFile
+                };
+                store.put(entry);
+            }
+
+            tx.oncomplete = () => {
+                loadFromLocal();
+                alert("Импорт из ZIP завершен успешно!");
+                statusDiv.textContent = "Готово.";
+            };
+        } catch (err) {
+            console.error(err);
+            alert("Ошибка при чтении ZIP-архива. Возможно, файл поврежден.");
+        }
+        e.target.value = "";
     };
 
     async function createThumbnail(file, size) {

@@ -81,9 +81,9 @@
                 <label for="userFileUpload" class="admin-btn">Добавить в галерею</label>
                 <input type="file" id="userFileUpload" accept=".png, .svg, .jpg, .jpeg" style="display:none;">
                 
-                <button id="exportGallery" class="admin-btn" style="background-color: #607d8b;">Сохранить архив (.json)</button>
-                <label for="importGalleryInput" class="admin-btn" style="background-color: #9e9e9e;">Открыть архив</label>
-                <input type="file" id="importGalleryInput" accept=".json" style="display:none;">
+                <button id="exportGallery" class="admin-btn" style="background-color: #607d8b;">Создать ZIP-архив</button>
+                <label for="importGalleryInput" class="admin-btn" style="background-color: #9e9e9e;">Открыть ZIP-архив</label>
+                <input type="file" id="importGalleryInput" accept=".zip" style="display:none;">
             </div>
             <div id="uploadedResultsList" class="results-list">
                 <p class="empty-msg">Нет загруженных результатов.</p>
@@ -108,7 +108,7 @@
         </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <script src="script.js"></script>
 </body>
 </html>
