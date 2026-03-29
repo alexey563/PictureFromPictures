@@ -354,30 +354,35 @@ document.addEventListener('DOMContentLoaded', () => {
             const metadataFile = await zip.file("metadata.json").async("string");
             const metadata = JSON.parse(metadataFile);
 
-            const tx = db.transaction("gallery", "readwrite");
-            const store = tx.objectStore("gallery");
-
-            for (const item of metadata) {
-                statusDiv.textContent = `Импорт: ${item.fileName}...`;
+            for (let i = 0; i < metadata.length; i++) {
+                const item = metadata[i];
+                statusDiv.textContent = `Импорт (${i+1}/${metadata.length}): ${item.fileName}...`;
+                
+                // Сначала распаковываем (это асинхронно и закрыло бы общую транзакцию)
                 const imageFile = await zip.file(`images/${item.storageName}`).async("blob");
                 
-                store.put({
-                    id: item.id,
-                    fileName: item.fileName,
-                    rating: item.rating,
-                    thumbUrl: item.thumbUrl,
-                    file: imageFile
+                // Теперь открываем СВЕЖУЮ транзакцию специально для этого файла
+                await new Promise((resolve, reject) => {
+                    const tx = db.transaction("gallery", "readwrite");
+                    const store = tx.objectStore("gallery");
+                    const request = store.put({
+                        id: item.id,
+                        fileName: item.fileName,
+                        rating: item.rating,
+                        thumbUrl: item.thumbUrl,
+                        file: imageFile
+                    });
+                    tx.oncomplete = () => resolve();
+                    tx.onerror = () => reject(tx.error);
                 });
             }
 
-            tx.oncomplete = () => {
-                loadFromLocal();
-                alert("Импорт завершен! Тяжелые файлы были автоматически оптимизированы.");
-                statusDiv.textContent = "Готово.";
-            };
+            loadFromLocal();
+            alert("Импорт из ZIP завершен успешно!");
+            statusDiv.textContent = "Готово.";
         } catch (err) {
             console.error(err);
-            alert("Ошибка при чтении архива.");
+            alert("Ошибка при импорте. Проверьте консоль браузера.");
         }
         e.target.value = "";
     };
