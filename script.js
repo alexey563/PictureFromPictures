@@ -15,6 +15,77 @@ document.addEventListener('DOMContentLoaded', () => {
     const resultCanvas = document.getElementById('resultCanvas');
     const ctx = resultCanvas.getContext('2d', { willReadFrequently: true });
 
+    // Admin Elements
+    const adminPassword = document.getElementById('adminPassword');
+    const adminSection = document.getElementById('adminSection');
+    const uploadResultBtn = document.getElementById('uploadResultBtn');
+    const resultsList = document.getElementById('uploadedResultsList');
+    
+    // Simple state for demo (in production this would be a database)
+    let uploadedResults = [];
+    const ADMIN_PASSWORD = "admin"; // Вы можете изменить пароль здесь
+
+    adminPassword.addEventListener('input', () => {
+        if (adminPassword.value === ADMIN_PASSWORD) {
+            adminSection.style.display = 'block';
+            adminPassword.blur();
+            adminPassword.value = "";
+            renderUploadedResults();
+        } else {
+            adminSection.style.display = 'none';
+        }
+    });
+
+    uploadResultBtn.addEventListener('click', () => {
+        if (resultCanvas.width === 0) {
+            alert("Сначала создайте мозаику!");
+            return;
+        }
+        
+        const dataUrl = resultCanvas.toDataURL('image/jpeg', 0.5); // Сжатое превью
+        const id = Date.now();
+        uploadedResults.push({ id, dataUrl, rating: 0 });
+        renderUploadedResults();
+        alert("Мозаика успешно 'загружена'!");
+    });
+
+    function renderUploadedResults() {
+        if (uploadedResults.length === 0) {
+            resultsList.innerHTML = '<p class="empty-msg">Нет загруженных результатов.</p>';
+            return;
+        }
+
+        resultsList.innerHTML = "";
+        uploadedResults.forEach(item => {
+            const div = document.createElement('div');
+            div.className = 'result-item';
+            div.innerHTML = `
+                <img src="${item.dataUrl}" alt="Result">
+                <div class="item-actions">
+                    <span class="rate-btn" onclick="rateItem(${item.id})">★ ${item.rating}</span>
+                    <button class="delete-btn" onclick="deleteItem(${item.id})">Удалить</button>
+                </div>
+            `;
+            resultsList.appendChild(div);
+        });
+    }
+
+    // Глобальные функции для кнопок в списке
+    window.rateItem = (id) => {
+        const item = uploadedResults.find(i => i.id === id);
+        if (item) {
+            item.rating++;
+            renderUploadedResults();
+        }
+    };
+
+    window.deleteItem = (id) => {
+        if (confirm("Удалить этот результат?")) {
+            uploadedResults = uploadedResults.filter(i => i.id !== id);
+            renderUploadedResults();
+        }
+    };
+
     let mosaicData = { cols: 0, rows: 0, cellSize: 0, grid: [], sources: [] };
 
     // Очистка при загрузке (чтобы не оставалось старых данных)

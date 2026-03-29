@@ -73,7 +73,24 @@
         <div class="result-container">
             <canvas id="resultCanvas"></canvas>
         </div>
+
+        <div id="adminSection" class="admin-section" style="display:none;">
+            <hr>
+            <h2>Управление результатами</h2>
+            <div class="admin-controls">
+                <button id="uploadResultBtn" class="admin-btn">Загрузить в галерею</button>
+            </div>
+            <div id="uploadedResultsList" class="results-list">
+                <!-- Сюда будут динамически добавляться загруженные результаты -->
+                <p class="empty-msg">Нет загруженных результатов.</p>
+            </div>
+        </div>
     </div>
+
+    <div class="footer-access">
+        <input type="password" id="adminPassword" placeholder="..." title="Админ-панель">
+    </div>
+
     <script src="script.js"></script>
 </body>
 </html>
