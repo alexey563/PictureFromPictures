@@ -31,15 +31,12 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // --- Настройка Supabase ---
     const SUPABASE_URL = 'https://thfeqjkabagcqngvvrke.supabase.co'; 
-    const SUPABASE_KEY = 'thfeqjkabagcqngvvrke'; // <--- ВНИМАНИЕ: это похоже на ID проекта, а не на ANON KEY. 
+    const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRoZmVxamthYmFnY3FuZ3Z2cmtlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ3ODA5MzEsImV4cCI6MjA5MDM1NjkzMX0.udSMrieaiknVSnduIMUbyIUb6Xk4URwaEEuAmHuKZ7U'; 
     let supabase = null;
 
     try {
-        // Если ключ короткий, значит это не Anon Key (он должен быть очень длинным)
-        if (SUPABASE_KEY.length > 30) {
+        if (SUPABASE_KEY && SUPABASE_KEY.length > 50) {
             supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-        } else {
-            console.warn("SUPABASE_KEY слишком короткий. Проверьте Project Settings -> API -> anon public");
         }
     } catch (e) {
         console.error("Supabase init error:", e);
