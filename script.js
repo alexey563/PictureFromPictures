@@ -54,27 +54,23 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // Загрузка файла в локальную БД
+    // Загрузка файла в локальную БД (ОПТИМИЗИРОВАНО: храним Blob вместо DataURL)
     fileUploadInput.addEventListener('change', async (e) => {
         const file = e.target.files[0];
         if (!file || !db) return;
 
-        statusDiv.textContent = "Сохранение в локальное хранилище...";
-        const reader = new FileReader();
-        reader.onload = async (event) => {
-            const id = Date.now();
-            const dataUrl = event.target.result;
-            const thumbUrl = await createThumbnail(file, 300);
-            
-            const item = { id, dataUrl, thumbUrl, fileName: file.name, rating: 0 };
-            const tx = db.transaction("gallery", "readwrite");
-            tx.objectStore("gallery").add(item);
-            tx.oncomplete = () => {
-                loadFromLocal();
-                statusDiv.textContent = "Успешно добавлено!";
-            };
+        statusDiv.textContent = "Сохранение... Пожалуйста, подождите.";
+        const id = Date.now();
+        const thumbUrl = await createThumbnail(file, 300);
+        
+        // Сохраняем файл как чистый Blob (это максимально быстро и экономно)
+        const item = { id, file: file, thumbUrl, fileName: file.name, rating: 0 };
+        const tx = db.transaction("gallery", "readwrite");
+        tx.objectStore("gallery").add(item);
+        tx.oncomplete = () => {
+            loadFromLocal();
+            statusDiv.textContent = "Готово! Добавлено в локальную галерею.";
         };
-        reader.readAsDataURL(file);
     });
 
     async function loadFromLocal() {
@@ -99,7 +95,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const div = document.createElement('div');
             div.className = 'result-item';
             div.innerHTML = `
-                <img src="${item.thumbUrl}" alt="Preview" onclick="openFullscreen('${item.dataUrl}')">
+                <img src="${item.thumbUrl}" alt="Preview" onclick="viewOriginal(${item.id})">
                 <div class="item-name" style="font-size: 0.7rem; margin-bottom: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${item.fileName}</div>
                 <div class="item-actions">
                     <span class="rate-btn" onclick="rateItem(${item.id})">★ ${item.rating}</span>
@@ -110,36 +106,174 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // Экспорт всей галереи в один файл (JSON)
-    document.getElementById('exportGallery').onclick = () => {
-        const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(uploadedResults));
-        const downloadAnchorNode = document.createElement('a');
-        downloadAnchorNode.setAttribute("href", dataStr);
-        downloadAnchorNode.setAttribute("download", "mosaic_gallery_backup.json");
-        document.body.appendChild(downloadAnchorNode);
-        downloadAnchorNode.click();
-        downloadAnchorNode.remove();
+    // --- Высокопроизводительный Canvas Viewer для 300MB+ фото ---
+    const viewerCanvas = document.getElementById('viewerCanvas');
+    const vCtx = viewerCanvas.getContext('2d', { alpha: false });
+    const modalContainer = document.getElementById('modalContainer');
+    
+    let currentImageBitmap = null;
+    let viewState = { x: 0, y: 0, scale: 1, isDragging: false, lastMouseX: 0, lastMouseY: 0 };
+
+    window.viewOriginal = async (id) => {
+        const item = uploadedResults.find(i => i.id === id);
+        if (!item) return;
+
+        statusDiv.textContent = "Декодирование Ultra HD... Пожалуйста, подождите.";
+        modal.style.display = "block";
+        
+        // Показываем сначала превью, пока грузится оригинал
+        const tempImg = new Image();
+        tempImg.onload = () => {
+            renderThumbToCanvas(tempImg);
+        };
+        tempImg.src = item.thumbUrl;
+
+        try {
+            // ФОНОВОЕ ДЕКОДИРОВАНИЕ: не вешает браузер
+            if (currentImageBitmap) currentImageBitmap.close();
+            currentImageBitmap = await createImageBitmap(item.file);
+            
+            // Сброс состояния просмотра
+            const containerWidth = modalContainer.clientWidth;
+            const containerHeight = modalContainer.clientHeight;
+            const scaleX = containerWidth / currentImageBitmap.width;
+            const scaleY = containerHeight / currentImageBitmap.height;
+            viewState.scale = Math.min(scaleX, scaleY, 1);
+            viewState.x = (containerWidth - currentImageBitmap.width * viewState.scale) / 2;
+            viewState.y = (containerHeight - currentImageBitmap.height * viewState.scale) / 2;
+            
+            draw();
+            statusDiv.textContent = "Готово! Используйте колесико для зума и мышь для перемещения.";
+        } catch (e) {
+            console.error(e);
+            alert("Браузеру не хватило памяти для декодирования оригинала. Попробуйте файл меньшего размера.");
+        }
     };
 
-    // Импорт галереи из файла
-    document.getElementById('importGalleryInput').onchange = (e) => {
-        const file = e.target.files[0];
-        if (!file) return;
+    function renderThumbToCanvas(img) {
+        viewerCanvas.width = modalContainer.clientWidth;
+        viewerCanvas.height = modalContainer.clientHeight;
+        vCtx.fillStyle = "#000";
+        vCtx.fillRect(0, 0, viewerCanvas.width, viewerCanvas.height);
+        const scale = Math.min(viewerCanvas.width / img.width, viewerCanvas.height / img.height);
+        const x = (viewerCanvas.width - img.width * scale) / 2;
+        const y = (viewerCanvas.height - img.height * scale) / 2;
+        vCtx.drawImage(img, x, y, img.width * scale, img.height * scale);
+    }
 
-        const reader = new FileReader();
-        reader.onload = (event) => {
-            try {
-                const importedData = JSON.parse(event.target.result);
-                const tx = db.transaction("gallery", "readwrite");
-                const store = tx.objectStore("gallery");
-                importedData.forEach(item => store.put(item));
-                tx.oncomplete = () => {
-                    loadFromLocal();
-                    alert("Галерея успешно импортирована!");
-                };
-            } catch (err) { alert("Ошибка при чтении файла архива."); }
-        };
-        reader.readAsText(file);
+    function draw() {
+        if (!currentImageBitmap) return;
+        
+        viewerCanvas.width = modalContainer.clientWidth;
+        viewerCanvas.height = modalContainer.clientHeight;
+        
+        vCtx.fillStyle = "#111";
+        vCtx.fillRect(0, 0, viewerCanvas.width, viewerCanvas.height);
+        
+        // Отрисовка только видимой части
+        vCtx.imageSmoothingEnabled = viewState.scale < 1;
+        vCtx.drawImage(
+            currentImageBitmap, 
+            viewState.x, viewState.y, 
+            currentImageBitmap.width * viewState.scale, 
+            currentImageBitmap.height * viewState.scale
+        );
+    }
+
+    // Обработка перемещения (Pan)
+    modalContainer.onmousedown = (e) => {
+        viewState.isDragging = true;
+        viewState.lastMouseX = e.clientX;
+        viewState.lastMouseY = e.clientY;
+        modalContainer.style.cursor = "grabbing";
+    };
+
+    window.onmousemove = (e) => {
+        if (!viewState.isDragging) return;
+        const dx = e.clientX - viewState.lastMouseX;
+        const dy = e.clientY - viewState.lastMouseY;
+        viewState.x += dx;
+        viewState.y += dy;
+        viewState.lastMouseX = e.clientX;
+        viewState.lastMouseY = e.clientY;
+        draw();
+    };
+
+    window.onmouseup = () => {
+        viewState.isDragging = false;
+        modalContainer.style.cursor = "grab";
+    };
+
+    // Плавный зум (Zoom)
+    modalContainer.onwheel = (e) => {
+        e.preventDefault();
+        const zoomFactor = e.deltaY > 0 ? 0.8 : 1.2;
+        
+        // Центрируем зум относительно курсора
+        const mouseX = e.clientX - modalContainer.getBoundingClientRect().left;
+        const mouseY = e.clientY - modalContainer.getBoundingClientRect().top;
+        
+        const imgX = (mouseX - viewState.x) / viewState.scale;
+        const imgY = (mouseY - viewState.y) / viewState.scale;
+        
+        viewState.scale *= zoomFactor;
+        
+        // Ограничения
+        if (viewState.scale < 0.05) viewState.scale = 0.05;
+        if (viewState.scale > 50) viewState.scale = 50;
+        
+        viewState.x = mouseX - imgX * viewState.scale;
+        viewState.y = mouseY - imgY * viewState.scale;
+        
+        draw();
+    };
+
+    // Кнопки зума
+    zoomInBtn.onclick = () => {
+        const centerX = viewerCanvas.width / 2;
+        const centerY = viewerCanvas.height / 2;
+        const imgX = (centerX - viewState.x) / viewState.scale;
+        const imgY = (centerY - viewState.y) / viewState.scale;
+        viewState.scale *= 1.5;
+        viewState.x = centerX - imgX * viewState.scale;
+        viewState.y = centerY - imgY * viewState.scale;
+        draw();
+    };
+
+    zoomOutBtn.onclick = () => {
+        const centerX = viewerCanvas.width / 2;
+        const centerY = viewerCanvas.height / 2;
+        const imgX = (centerX - viewState.x) / viewState.scale;
+        const imgY = (centerY - viewState.y) / viewState.scale;
+        viewState.scale *= 0.7;
+        viewState.x = centerX - imgX * viewState.scale;
+        viewState.y = centerY - imgY * viewState.scale;
+        draw();
+    };
+
+    closeModal.onclick = () => {
+        modal.style.display = "none";
+        if (currentImageBitmap) {
+            currentImageBitmap.close();
+            currentImageBitmap = null;
+        }
+    };
+
+    downloadOriginalBtn.onclick = () => {
+        // Чтобы скачать, берем данные из текущей выбранной мозаики
+        const item = uploadedResults.find(i => {
+             // Ищем текущую открытую картинку по имени файла или ID
+             return i.fileName === statusDiv.textContent.replace("Готово! ", ""); 
+        }) || uploadedResults[0]; 
+
+        if (item) {
+            const url = URL.createObjectURL(item.file);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = item.fileName;
+            link.click();
+            URL.revokeObjectURL(url);
+        }
     };
 
     async function createThumbnail(file, size) {

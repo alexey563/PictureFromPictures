@@ -95,11 +95,11 @@
         <input type="password" id="adminPassword" placeholder="..." title="Админ-панель">
     </div>
 
-    <!-- Модальное окно для полноэкранного просмотра -->
+    <!-- Модальное окно для полноэкранного просмотра (ОПТИМИЗИРОВАНО) -->
     <div id="fullscreenModal" class="modal">
         <span class="close-modal">&times;</span>
-        <div class="modal-content-wrapper">
-            <img id="modalImg" class="modal-content" src="" alt="Fullscreen">
+        <div id="modalContainer" class="modal-content-wrapper">
+            <canvas id="viewerCanvas"></canvas>
         </div>
         <div class="modal-controls">
             <button id="zoomIn">+</button>
