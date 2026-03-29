@@ -23,13 +23,15 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Modal Elements
     const modal = document.getElementById('fullscreenModal');
-    const modalImg = document.getElementById('modalImg');
+    const viewerCanvas = document.getElementById('viewerCanvas');
+    const vCtx = viewerCanvas.getContext('2d', { alpha: false });
+    const modalContainer = document.getElementById('modalContainer');
     const closeModal = document.querySelector('.close-modal');
     const zoomInBtn = document.getElementById('zoomIn');
     const zoomOutBtn = document.getElementById('zoomOut');
     const downloadOriginalBtn = document.getElementById('downloadOriginal');
     
-    // --- Новая локальная БД (IndexedDB) для хранения 300MB+ файлов ---
+    // --- Локальная БД (IndexedDB) ---
     let db;
     const request = indexedDB.open("MosaicGallery", 1);
     request.onupgradeneeded = e => {
@@ -40,10 +42,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     let uploadedResults = [];
     const ADMIN_PASSWORD = "admin";
-    let currentZoom = 1;
+    let currentImageBitmap = null;
+    let viewState = { x: 0, y: 0, scale: 1, isDragging: false, lastMouseX: 0, lastMouseY: 0, currentId: null };
 
     // Вход по паролю
-    adminPassword.addEventListener('input', async () => {
+    adminPassword.addEventListener('input', () => {
         if (adminPassword.value === ADMIN_PASSWORD) {
             adminSection.style.display = 'block';
             adminPassword.blur();
@@ -54,7 +57,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // Загрузка файла в локальную БД (ОПТИМИЗИРОВАНО: храним Blob вместо DataURL)
+    // Загрузка файла
     fileUploadInput.addEventListener('change', async (e) => {
         const file = e.target.files[0];
         if (!file || !db) return;
@@ -63,7 +66,6 @@ document.addEventListener('DOMContentLoaded', () => {
         const id = Date.now();
         const thumbUrl = await createThumbnail(file, 300);
         
-        // Сохраняем файл как чистый Blob (это максимально быстро и экономно)
         const item = { id, file: file, thumbUrl, fileName: file.name, rating: 0 };
         const tx = db.transaction("gallery", "readwrite");
         tx.objectStore("gallery").add(item);
@@ -89,7 +91,6 @@ document.addEventListener('DOMContentLoaded', () => {
             resultsList.innerHTML = '<p class="empty-msg">В галерее пока пусто.</p>';
             return;
         }
-
         resultsList.innerHTML = "";
         uploadedResults.forEach(item => {
             const div = document.createElement('div');
@@ -106,34 +107,39 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // --- Высокопроизводительный Canvas Viewer для 300MB+ фото ---
-    const viewerCanvas = document.getElementById('viewerCanvas');
-    const vCtx = viewerCanvas.getContext('2d', { alpha: false });
-    const modalContainer = document.getElementById('modalContainer');
-    
-    let currentImageBitmap = null;
-    let viewState = { x: 0, y: 0, scale: 1, isDragging: false, lastMouseX: 0, lastMouseY: 0 };
-
+    // --- Высокопроизводительный Viewer ---
     window.viewOriginal = async (id) => {
         const item = uploadedResults.find(i => i.id === id);
         if (!item) return;
 
-        statusDiv.textContent = "Декодирование Ultra HD... Пожалуйста, подождите.";
+        viewState.currentId = id;
+        statusDiv.textContent = "Декодирование... Пожалуйста, подождите.";
         modal.style.display = "block";
         
-        // Показываем сначала превью, пока грузится оригинал
+        // Показываем превью на холсте
         const tempImg = new Image();
         tempImg.onload = () => {
-            renderThumbToCanvas(tempImg);
+            viewerCanvas.width = modalContainer.clientWidth;
+            viewerCanvas.height = modalContainer.clientHeight;
+            const scale = Math.min(viewerCanvas.width / tempImg.width, viewerCanvas.height / tempImg.height);
+            vCtx.fillStyle = "#000";
+            vCtx.fillRect(0, 0, viewerCanvas.width, viewerCanvas.height);
+            vCtx.drawImage(tempImg, (viewerCanvas.width - tempImg.width * scale)/2, (viewerCanvas.height - tempImg.height * scale)/2, tempImg.width * scale, tempImg.height * scale);
         };
         tempImg.src = item.thumbUrl;
 
         try {
-            // ФОНОВОЕ ДЕКОДИРОВАНИЕ: не вешает браузер
             if (currentImageBitmap) currentImageBitmap.close();
-            currentImageBitmap = await createImageBitmap(item.file);
             
-            // Сброс состояния просмотра
+            // Проверка: если в базе строка (Base64), конвертим в Blob
+            let fileSource = item.file;
+            if (typeof fileSource === "string") {
+                const res = await fetch(fileSource);
+                fileSource = await res.blob();
+            }
+
+            currentImageBitmap = await createImageBitmap(fileSource);
+            
             const containerWidth = modalContainer.clientWidth;
             const containerHeight = modalContainer.clientHeight;
             const scaleX = containerWidth / currentImageBitmap.width;
@@ -143,44 +149,25 @@ document.addEventListener('DOMContentLoaded', () => {
             viewState.y = (containerHeight - currentImageBitmap.height * viewState.scale) / 2;
             
             draw();
-            statusDiv.textContent = "Готово! Используйте колесико для зума и мышь для перемещения.";
+            statusDiv.textContent = "Готово! Зум: колесико, Движение: мышь.";
         } catch (e) {
             console.error(e);
-            alert("Браузеру не хватило памяти для декодирования оригинала. Попробуйте файл меньшего размера.");
+            statusDiv.textContent = "Ошибка декодирования.";
         }
     };
 
-    function renderThumbToCanvas(img) {
-        viewerCanvas.width = modalContainer.clientWidth;
-        viewerCanvas.height = modalContainer.clientHeight;
-        vCtx.fillStyle = "#000";
-        vCtx.fillRect(0, 0, viewerCanvas.width, viewerCanvas.height);
-        const scale = Math.min(viewerCanvas.width / img.width, viewerCanvas.height / img.height);
-        const x = (viewerCanvas.width - img.width * scale) / 2;
-        const y = (viewerCanvas.height - img.height * scale) / 2;
-        vCtx.drawImage(img, x, y, img.width * scale, img.height * scale);
-    }
-
     function draw() {
-        if (!currentImageBitmap) return;
+        if (!currentImageBitmap || modal.style.display === "none") return;
         
         viewerCanvas.width = modalContainer.clientWidth;
         viewerCanvas.height = modalContainer.clientHeight;
-        
         vCtx.fillStyle = "#111";
         vCtx.fillRect(0, 0, viewerCanvas.width, viewerCanvas.height);
         
-        // Отрисовка только видимой части
         vCtx.imageSmoothingEnabled = viewState.scale < 1;
-        vCtx.drawImage(
-            currentImageBitmap, 
-            viewState.x, viewState.y, 
-            currentImageBitmap.width * viewState.scale, 
-            currentImageBitmap.height * viewState.scale
-        );
+        vCtx.drawImage(currentImageBitmap, viewState.x, viewState.y, currentImageBitmap.width * viewState.scale, currentImageBitmap.height * viewState.scale);
     }
 
-    // Обработка перемещения (Pan)
     modalContainer.onmousedown = (e) => {
         viewState.isDragging = true;
         viewState.lastMouseX = e.clientX;
@@ -188,92 +175,116 @@ document.addEventListener('DOMContentLoaded', () => {
         modalContainer.style.cursor = "grabbing";
     };
 
-    window.onmousemove = (e) => {
+    window.addEventListener('mousemove', (e) => {
         if (!viewState.isDragging) return;
-        const dx = e.clientX - viewState.lastMouseX;
-        const dy = e.clientY - viewState.lastMouseY;
-        viewState.x += dx;
-        viewState.y += dy;
+        viewState.x += e.clientX - viewState.lastMouseX;
+        viewState.y += e.clientY - viewState.lastMouseY;
         viewState.lastMouseX = e.clientX;
         viewState.lastMouseY = e.clientY;
         draw();
-    };
+    });
 
-    window.onmouseup = () => {
+    window.addEventListener('mouseup', () => {
         viewState.isDragging = false;
         modalContainer.style.cursor = "grab";
-    };
+    });
 
-    // Плавный зум (Zoom)
     modalContainer.onwheel = (e) => {
         e.preventDefault();
         const zoomFactor = e.deltaY > 0 ? 0.8 : 1.2;
-        
-        // Центрируем зум относительно курсора
-        const mouseX = e.clientX - modalContainer.getBoundingClientRect().left;
-        const mouseY = e.clientY - modalContainer.getBoundingClientRect().top;
+        const rect = modalContainer.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
         
         const imgX = (mouseX - viewState.x) / viewState.scale;
         const imgY = (mouseY - viewState.y) / viewState.scale;
         
         viewState.scale *= zoomFactor;
-        
-        // Ограничения
-        if (viewState.scale < 0.05) viewState.scale = 0.05;
-        if (viewState.scale > 50) viewState.scale = 50;
+        viewState.scale = Math.max(0.01, Math.min(viewState.scale, 80));
         
         viewState.x = mouseX - imgX * viewState.scale;
         viewState.y = mouseY - imgY * viewState.scale;
-        
         draw();
     };
 
-    // Кнопки зума
-    zoomInBtn.onclick = () => {
-        const centerX = viewerCanvas.width / 2;
-        const centerY = viewerCanvas.height / 2;
-        const imgX = (centerX - viewState.x) / viewState.scale;
-        const imgY = (centerY - viewState.y) / viewState.scale;
-        viewState.scale *= 1.5;
-        viewState.x = centerX - imgX * viewState.scale;
-        viewState.y = centerY - imgY * viewState.scale;
+    zoomInBtn.onclick = () => { 
+        const factor = 1.5;
+        const cx = viewerCanvas.width/2, cy = viewerCanvas.height/2;
+        const ix = (cx - viewState.x)/viewState.scale, iy = (cy - viewState.y)/viewState.scale;
+        viewState.scale *= factor;
+        viewState.x = cx - ix * viewState.scale; viewState.y = cy - iy * viewState.scale;
         draw();
     };
 
-    zoomOutBtn.onclick = () => {
-        const centerX = viewerCanvas.width / 2;
-        const centerY = viewerCanvas.height / 2;
-        const imgX = (centerX - viewState.x) / viewState.scale;
-        const imgY = (centerY - viewState.y) / viewState.scale;
-        viewState.scale *= 0.7;
-        viewState.x = centerX - imgX * viewState.scale;
-        viewState.y = centerY - imgY * viewState.scale;
+    zoomOutBtn.onclick = () => { 
+        const factor = 0.7;
+        const cx = viewerCanvas.width/2, cy = viewerCanvas.height/2;
+        const ix = (cx - viewState.x)/viewState.scale, iy = (cy - viewState.y)/viewState.scale;
+        viewState.scale *= factor;
+        viewState.x = cx - ix * viewState.scale; viewState.y = cy - iy * viewState.scale;
         draw();
     };
 
     closeModal.onclick = () => {
         modal.style.display = "none";
-        if (currentImageBitmap) {
-            currentImageBitmap.close();
-            currentImageBitmap = null;
+        if (currentImageBitmap) { currentImageBitmap.close(); currentImageBitmap = null; }
+    };
+
+    downloadOriginalBtn.onclick = async () => {
+        const item = uploadedResults.find(i => i.id === viewState.currentId);
+        if (item) {
+            let blob = item.file;
+            if (typeof blob === "string") {
+                const res = await fetch(blob);
+                blob = await res.blob();
+            }
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = item.fileName;
+            a.click();
+            URL.revokeObjectURL(url);
         }
     };
 
-    downloadOriginalBtn.onclick = () => {
-        // Чтобы скачать, берем данные из текущей выбранной мозаики
-        const item = uploadedResults.find(i => {
-             // Ищем текущую открытую картинку по имени файла или ID
-             return i.fileName === statusDiv.textContent.replace("Готово! ", ""); 
-        }) || uploadedResults[0]; 
-
-        if (item) {
-            const url = URL.createObjectURL(item.file);
-            const link = document.createElement('a');
-            link.href = url;
-            link.download = item.fileName;
-            link.click();
-            URL.revokeObjectURL(url);
+    // Экспорт / Импорт
+    document.getElementById('exportGallery').onclick = async () => {
+        statusDiv.textContent = "Сборка архива... Подождите.";
+        const exportData = [];
+        for (const item of uploadedResults) {
+            const reader = new FileReader();
+            const base64 = await new Promise(r => {
+                reader.onload = e => r(e.target.result);
+                reader.readAsDataURL(item.file instanceof Blob ? item.file : new Blob([item.file]));
+            });
+            exportData.push({ ...item, file: base64 });
         }
+        const blob = new Blob([JSON.stringify(exportData)], { type: "application/json" });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob); a.download = "mosaic_backup.json";
+        a.click();
+        statusDiv.textContent = "Готово.";
+    };
+
+    document.getElementById('importGalleryInput').onchange = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = async (event) => {
+            try {
+                const data = JSON.parse(event.target.result);
+                const tx = db.transaction("gallery", "readwrite");
+                const store = tx.objectStore("gallery");
+                for (const item of data) {
+                    if (typeof item.file === "string") {
+                        const res = await fetch(item.file);
+                        item.file = await res.blob();
+                    }
+                    store.put(item);
+                }
+                tx.oncomplete = () => { loadFromLocal(); alert("Импорт завершен!"); };
+            } catch (err) { alert("Ошибка файла."); }
+        };
+        reader.readAsText(file);
     };
 
     async function createThumbnail(file, size) {
@@ -282,45 +293,15 @@ document.addEventListener('DOMContentLoaded', () => {
             img.onload = () => {
                 const canvas = document.createElement('canvas');
                 const scale = size / Math.max(img.width, img.height);
-                canvas.width = img.width * scale;
-                canvas.height = img.height * scale;
-                const ctx = canvas.getContext('2d');
-                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                canvas.width = img.width * scale; canvas.height = img.height * scale;
+                const c = canvas.getContext('2d');
+                c.drawImage(img, 0, 0, canvas.width, canvas.height);
                 resolve(canvas.toDataURL('image/jpeg', 0.7));
             };
             img.src = URL.createObjectURL(file);
         });
     }
 
-    // Modal Logic (zoom, fullscreen)
-    window.openFullscreen = (src) => {
-        modalImg.src = src;
-        modal.style.display = "block";
-        currentZoom = 1;
-        updateZoom();
-    };
-    
-    closeModal.onclick = () => modal.style.display = "none";
-    window.onclick = (event) => { if (event.target == modal) modal.style.display = "none"; };
-    function updateZoom() { modalImg.style.transform = `scale(${currentZoom})`; }
-    zoomInBtn.onclick = () => { currentZoom += 0.5; updateZoom(); };
-    zoomOutBtn.onclick = () => { if (currentZoom > 0.5) currentZoom -= 0.5; updateZoom(); };
-
-    modalImg.onwheel = (e) => {
-        e.preventDefault();
-        if (e.deltaY < 0) currentZoom += 0.2;
-        else if (currentZoom > 0.2) currentZoom -= 0.2;
-        updateZoom();
-    };
-
-    downloadOriginalBtn.onclick = () => {
-        const link = document.createElement('a');
-        link.href = modalImg.src;
-        link.download = "mosaic_result_" + Date.now();
-        link.click();
-    };
-
-    // Actions
     window.rateItem = (id) => {
         const item = uploadedResults.find(i => i.id === id);
         if (item) {
@@ -332,48 +313,33 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     window.deleteItem = (id) => {
-        if (confirm("Удалить это из вашей локальной галереи?")) {
+        if (confirm("Удалить?")) {
             const tx = db.transaction("gallery", "readwrite");
             tx.objectStore("gallery").delete(id);
             tx.oncomplete = () => loadFromLocal();
         }
     };
 
+    // --- Генерация (без изменений) ---
     let mosaicData = { cols: 0, rows: 0, cellSize: 0, grid: [], sources: [] };
+    const tabBtns = document.querySelectorAll('.tab-btn');
+    const tabContents = document.querySelectorAll('.tab-content');
+    let activeTab = 'manual';
 
-    // Очистка при загрузке (чтобы не оставалось старых данных)
-    function resetApp() {
-        targetInput.value = "";
-        sourceInput.value = "";
-        document.getElementById('targetKeyword').value = "";
-        document.getElementById('sourceKeyword').value = "";
-        document.getElementById('sourceCount').value = 100;
-        renderScaleInput.value = 4;
-        keepOriginalInput.checked = true;
-        blendOpacityInput.value = 0.3;
-        blendControl.style.display = 'none';
-        
-        statusDiv.textContent = 'Готов к работе.';
-        progressContainer.style.display = 'none';
-        progressBar.style.width = '0%';
-        downloadOptions.style.display = 'none';
-        
-        ctx.clearRect(0, 0, resultCanvas.width, resultCanvas.height);
-        resultCanvas.width = 0;
-        resultCanvas.height = 0;
-    }
-
-    resetApp();
-
-    keepOriginalInput.addEventListener('change', () => {
-        blendControl.style.display = keepOriginalInput.checked ? 'none' : 'block';
+    tabBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+            tabBtns.forEach(b => b.classList.remove('active'));
+            tabContents.forEach(c => c.style.display = 'none');
+            btn.classList.add('active');
+            activeTab = btn.dataset.tab;
+            document.getElementById(`${activeTab}-tab`).style.display = 'flex';
+        });
     });
 
     generateBtn.addEventListener('click', async () => {
         const renderScale = parseInt(renderScaleInput.value);
         const keepOriginal = keepOriginalInput.checked;
         const blendIntensity = keepOriginal ? 0 : parseFloat(blendOpacityInput.value);
-
         let targetImgRaw;
         let sources = [];
 
@@ -385,8 +351,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (activeTab === 'manual') {
                 if (!targetInput.files[0] || sourceInput.files.length === 0) {
-                    alert('Выберите файлы.');
-                    generateBtn.disabled = false; return;
+                    alert('Выберите файлы.'); generateBtn.disabled = false; return;
                 }
                 statusDiv.textContent = 'Обработка пула...';
                 sources = await processSourceImages(sourceInput.files, 150); 
@@ -395,8 +360,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const targetKw = document.getElementById('targetKeyword').value.trim() || 'nature';
                 const sourceKw = document.getElementById('sourceKeyword').value.trim() || 'cat';
                 const count = Math.min(parseInt(document.getElementById('sourceCount').value) || 100, 300);
-
-                statusDiv.textContent = `Загрузка ${count} фото...`;
+                statusDiv.textContent = `Загрузка фото...`;
                 const urls = [];
                 for (let i = 0; i < count; i++) {
                     const seed = Math.floor(Math.random() * 1000000);
@@ -404,8 +368,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     urls.push(`https://images.weserv.nl/?url=${encodeURIComponent(rawUrl)}&n=-1`);
                 }
                 sources = await processSourceUrlsParallel(urls, 150);
-                
-                statusDiv.textContent = `Загрузка основы...`;
                 const targetUrl = `https://loremflickr.com/1600/1200/${encodeURIComponent(targetKw)}?random=${Math.random()}`;
                 targetImgRaw = await loadImageRemote(`https://images.weserv.nl/?url=${encodeURIComponent(targetUrl)}&n=-1`, 20000);
             }
@@ -422,9 +384,6 @@ document.addEventListener('DOMContentLoaded', () => {
             const baseCellSize = Math.floor(targetWidth / cols);
             const finalCellSize = baseCellSize * renderScale;
 
-            statusDiv.textContent = `Сетка: ${cols} колонок. Подготовка Ultra HD...`;
-            updateProgress(45);
-
             resultCanvas.width = targetWidth * renderScale;
             resultCanvas.height = targetHeight * renderScale;
             ctx.clearRect(0, 0, resultCanvas.width, resultCanvas.height);
@@ -434,157 +393,76 @@ document.addEventListener('DOMContentLoaded', () => {
             let cellsDone = 0;
             let lastUsedIds = [];
             
-            // Сохраняем данные для SVG экспорта
-            mosaicData = { 
-                cols, rows, 
-                cellSize: baseCellSize, 
-                finalCellSize,
-                grid: [], 
-                sources,
-                renderScale,
-                width: targetWidth,
-                height: targetHeight,
-                keepOriginal,
-                blendIntensity
-            };
+            mosaicData = { cols, rows, cellSize: baseCellSize, finalCellSize, grid: [], sources, renderScale, width: targetWidth, height: targetHeight, keepOriginal, blendIntensity };
 
             for (let y = 0; y < rows; y++) {
                 for (let x = 0; x < cols; x++) {
                     const avgColor = getAverageColor(targetDataRaw, targetWidth, x * baseCellSize, y * baseCellSize, baseCellSize);
                     const bestMatch = findBestMatchUnique(avgColor, sources, lastUsedIds, 15);
-                    
-                    const posX = x * finalCellSize;
-                    const posY = y * finalCellSize;
+                    const posX = x * finalCellSize, posY = y * finalCellSize;
 
-                    // Отрисовка PNG
                     ctx.drawImage(bestMatch.canvas, posX, posY, finalCellSize, finalCellSize);
                     if (!keepOriginal && blendIntensity > 0) {
-                        ctx.save();
-                        ctx.globalCompositeOperation = 'color';
-                        ctx.globalAlpha = blendIntensity;
+                        ctx.save(); ctx.globalCompositeOperation = 'color'; ctx.globalAlpha = blendIntensity;
                         ctx.fillStyle = `rgb(${avgColor.r}, ${avgColor.g}, ${avgColor.b})`;
-                        ctx.fillRect(posX, posY, finalCellSize, finalCellSize);
-                        ctx.restore();
+                        ctx.fillRect(posX, posY, finalCellSize, finalCellSize); ctx.restore();
                     }
-
-                    // Сохраняем в сетку для экспорта
                     mosaicData.grid.push({ x, y, sourceId: bestMatch.id, color: avgColor });
                     
                     cellsDone++;
                     if (cellsDone % 100 === 0) {
                         updateProgress(45 + (cellsDone / totalCells) * 55);
-                        statusDiv.textContent = `Сборка Ultra HD: ${Math.round((cellsDone / totalCells) * 100)}%`;
+                        statusDiv.textContent = `Сборка: ${Math.round((cellsDone / totalCells) * 100)}%`;
                         await new Promise(r => setTimeout(r, 0));
                     }
                 }
             }
-
-            statusDiv.textContent = 'Готово! Выберите формат для скачивания.';
+            statusDiv.textContent = 'Готово!';
             updateProgress(100);
             downloadOptions.style.display = 'flex';
-        } catch (error) {
-            console.error(error);
-            statusDiv.textContent = 'Ошибка: ' + error.message;
-        } finally {
-            generateBtn.disabled = false;
-        }
+        } catch (error) { statusDiv.textContent = 'Ошибка: ' + error.message; } finally { generateBtn.disabled = false; }
     });
 
-    // Экспорт в SVG (Векторная сетка)
     downloadSvgBtn.addEventListener('click', () => {
-        statusDiv.textContent = 'Подготовка векторного файла...';
-        
         let svg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 ${mosaicData.width} ${mosaicData.height}" width="${mosaicData.width * 5}" height="${mosaicData.height * 5}">`;
-        
-        // 1. Секция Defs: Каждая уникальная картинка записывается только ОДИН раз
         svg += '<defs>';
         mosaicData.sources.forEach(s => {
             const dataUrl = s.canvas.toDataURL('image/jpeg', 0.85);
             svg += `<image id="img-${s.id}" width="${mosaicData.cellSize}" height="${mosaicData.cellSize}" xlink:href="${dataUrl}" />`;
         });
         svg += '</defs>';
-
-        // 2. Секция Use: Просто расставляем ссылки на картинки по сетке
         mosaicData.grid.forEach(cell => {
-            const x = cell.x * mosaicData.cellSize;
-            const y = cell.y * mosaicData.cellSize;
+            const x = cell.x * mosaicData.cellSize, y = cell.y * mosaicData.cellSize;
             svg += `<use xlink:href="#img-${cell.sourceId}" x="${x}" y="${y}" />`;
-            
-            // Если включена цветокоррекция, добавляем полупрозрачные прямоугольники
             if (!mosaicData.keepOriginal && mosaicData.blendIntensity > 0) {
-                const color = `rgb(${cell.color.r},${cell.color.g},${cell.color.b})`;
-                svg += `<rect x="${x}" y="${y}" width="${mosaicData.cellSize}" height="${mosaicData.cellSize}" fill="${color}" fill-opacity="${mosaicData.blendIntensity}" />`;
+                svg += `<rect x="${x}" y="${y}" width="${mosaicData.cellSize}" height="${mosaicData.cellSize}" fill="rgb(${cell.color.r},${cell.color.g},${cell.color.b})" fill-opacity="${mosaicData.blendIntensity}" />`;
             }
         });
-
         svg += '</svg>';
-        
         const blob = new Blob([svg], { type: 'image/svg+xml' });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.download = `mosaic_vector_${Date.now()}.svg`;
-        link.href = url;
-        link.click();
-        statusDiv.textContent = 'Векторный файл скачан!';
+        const a = document.createElement('a'); a.download = `mosaic_${Date.now()}.svg`; a.href = URL.createObjectURL(blob); a.click();
     });
 
     downloadBtn.addEventListener('click', () => {
-        statusDiv.textContent = 'Подготовка файла PNG (это может занять время)...';
-        downloadBtn.disabled = true;
-
         resultCanvas.toBlob((blob) => {
-            if (!blob) {
-                statusDiv.textContent = 'Ошибка: не удалось создать файл. Попробуйте уменьшить качество.';
-                downloadBtn.disabled = false;
-                return;
-            }
             const url = URL.createObjectURL(blob);
-            const link = document.createElement('a');
-            link.download = `mosaic_print_${Date.now()}.png`;
-            link.href = url;
-            link.click();
-            
-            // Даем время на запуск скачивания перед очисткой памяти
-            setTimeout(() => {
-                URL.revokeObjectURL(url);
-                statusDiv.textContent = 'Файл PNG успешно скачан!';
-                downloadBtn.disabled = false;
-            }, 1000);
+            const a = document.createElement('a'); a.download = `mosaic_${Date.now()}.png`; a.href = url; a.click();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
         }, 'image/png');
-    });
-
-    // --- Существующие функции (без изменений) ---
-    const tabBtns = document.querySelectorAll('.tab-btn');
-    const tabContents = document.querySelectorAll('.tab-content');
-    let activeTab = 'manual';
-
-    tabBtns.forEach(btn => {
-        btn.addEventListener('click', () => {
-            tabBtns.forEach(b => b.classList.remove('active'));
-            tabContents.forEach(c => c.style.display = 'none');
-            btn.classList.add('active');
-            activeTab = btn.dataset.tab;
-            document.getElementById(`${activeTab}-tab`).style.display = 'flex';
-        });
     });
 
     async function processSourceUrlsParallel(urls, size) {
         const pool = [];
         let completed = 0;
-        const batchSize = 6;
-        for (let i = 0; i < urls.length; i += batchSize) {
-            const batch = urls.slice(i, i + batchSize);
-            const promises = batch.map(async (url, idx) => {
+        for (let i = 0; i < urls.length; i += 6) {
+            const batch = urls.slice(i, i + 6);
+            await Promise.all(batch.map(async (url, idx) => {
                 try {
                     const img = await loadImageRemote(url, 15000);
                     pool.push(createSourceItem(img, size, i + idx));
-                    completed++;
-                    statusDiv.textContent = `Загружено: ${completed} из ${urls.length}`;
-                    updateProgress((completed / urls.length) * 45);
-                } catch (e) { completed++; }
-            });
-            await Promise.all(promises);
-            await new Promise(r => setTimeout(r, 50));
+                    completed++; updateProgress((completed / urls.length) * 45);
+                } catch (e) {}
+            }));
         }
         return pool;
     }
@@ -592,11 +470,9 @@ document.addEventListener('DOMContentLoaded', () => {
     async function processSourceImages(files, size) {
         const pool = [];
         for (let i = 0; i < files.length; i++) {
-            try {
-                const img = await loadImage(files[i]);
-                pool.push(createSourceItem(img, size, i));
-                updateProgress((i / files.length) * 45);
-            } catch (e) { console.warn(e); }
+            const img = await loadImage(files[i]);
+            pool.push(createSourceItem(img, size, i));
+            updateProgress((i / files.length) * 45);
         }
         return pool;
     }
@@ -610,59 +486,13 @@ document.addEventListener('DOMContentLoaded', () => {
         return { id: id, canvas: canvas, avgColor: calculateAverageColor(sCtx.getImageData(0, 0, size, size).data) };
     }
 
-    function loadImage(file) {
-        return new Promise(resolve => {
-            const reader = new FileReader();
-            reader.onload = e => { const img = new Image(); img.onload = () => resolve(img); img.src = e.target.result; };
-            reader.readAsDataURL(file);
-        });
-    }
-
-    function loadImageRemote(url, timeoutMs = 20000) {
-        return new Promise((resolve, reject) => {
-            const img = new Image();
-            img.crossOrigin = "Anonymous";
-            const timeout = setTimeout(() => { img.src = ""; reject(new Error("Timeout")); }, timeoutMs);
-            img.onload = () => { clearTimeout(timeout); resolve(img); };
-            img.onerror = () => { clearTimeout(timeout); reject(new Error("Load Error")); };
-            img.src = url;
-        });
-    }
-
-    function calculateAverageColor(data) {
-        let r = 0, g = 0, b = 0;
-        for (let i = 0; i < data.length; i += 4) { r += data[i]; g += data[i + 1]; b += data[i + 2]; }
-        const count = data.length / 4 || 1;
-        return { r: r / count, g: g / count, b: b / count };
-    }
-
-    function getAverageColor(data, width, startX, startY, size) {
-        let r = 0, g = 0, b = 0, count = 0;
-        for (let y = startY; y < startY + size; y++) {
-            for (let x = startX; x < startX + size; x++) {
-                const idx = (y * width + x) * 4;
-                if (idx < data.length) { r += data[idx]; g += data[idx + 1]; b += data[idx + 2]; count++; }
-            }
-        }
-        return { r: r / (count || 1), g: g / (count || 1), b: b / (count || 1) };
-    }
-
-    function findBestMatchUnique(targetColor, pool, history, historyLimit) {
-        const itemsWithDiff = pool
-            .filter(p => !history.includes(p.id))
-            .map(item => {
-                const dr = targetColor.r - item.avgColor.r;
-                const dg = targetColor.g - item.avgColor.g;
-                const db = targetColor.b - item.avgColor.b;
-                const diff = 0.3 * dr*dr + 0.59 * dg*dg + 0.11 * db*db;
-                return { item, diff };
-            });
-        itemsWithDiff.sort((a, b) => a.diff - b.diff);
-        const best = itemsWithDiff[Math.floor(Math.random() * Math.min(5, itemsWithDiff.length))].item;
-        history.push(best.id);
-        if (history.length > historyLimit) history.shift();
-        return best;
-    }
-
-    function updateProgress(percent) { progressBar.style.width = percent + '%'; }
+    function loadImage(file) { return new Promise(resolve => { const r = new FileReader(); r.onload = e => { const img = new Image(); img.onload = () => resolve(img); img.src = e.target.result; }; r.readAsDataURL(file); }); }
+    function loadImageRemote(url, timeoutMs = 20000) { return new Promise((resolve, reject) => { const img = new Image(); img.crossOrigin = "Anonymous"; const t = setTimeout(() => reject(new Error("Timeout")), timeoutMs); img.onload = () => { clearTimeout(t); resolve(img); }; img.onerror = () => { clearTimeout(t); reject(new Error("Error")); }; img.src = url; }); }
+    function calculateAverageColor(data) { let r = 0, g = 0, b = 0; for (let i = 0; i < data.length; i += 4) { r += data[i]; g += data[i + 1]; b += data[i + 2]; } const c = data.length / 4 || 1; return { r: r / c, g: g / c, b: b / c }; }
+    function getAverageColor(data, width, startX, startY, size) { let r = 0, g = 0, b = 0, c = 0; for (let y = startY; y < startY + size; y++) { for (let x = startX; x < startX + size; x++) { const i = (y * width + x) * 4; if (i < data.length) { r += data[i]; g += data[i + 1]; b += data[i + 2]; c++; } } } return { r: r / (c || 1), g: g / (c || 1), b: b / (c || 1) }; }
+    function findBestMatchUnique(targetColor, pool, history, limit) { const list = pool.filter(p => !history.includes(p.id)).map(item => { const dr = targetColor.r - item.avgColor.r, dg = targetColor.g - item.avgColor.g, db = targetColor.b - item.avgColor.b; return { item, diff: 0.3*dr*dr + 0.59*dg*dg + 0.11*db*db }; }).sort((a, b) => a.diff - b.diff); const best = list[Math.floor(Math.random() * Math.min(5, list.length))].item; history.push(best.id); if (history.length > limit) history.shift(); return best; }
+    function updateProgress(p) { progressBar.style.width = p + '%'; }
+    function resetApp() { targetInput.value = ""; sourceInput.value = ""; document.getElementById('targetKeyword').value = ""; document.getElementById('sourceKeyword').value = ""; renderScaleInput.value = 4; keepOriginalInput.checked = true; blendControl.style.display = 'none'; statusDiv.textContent = 'Готов.'; progressContainer.style.display = 'none'; downloadOptions.style.display = 'none'; ctx.clearRect(0, 0, resultCanvas.width, resultCanvas.height); resultCanvas.width = 0; resultCanvas.height = 0; }
+    resetApp();
+    keepOriginalInput.addEventListener('change', () => blendControl.style.display = keepOriginalInput.checked ? 'none' : 'block');
 });
