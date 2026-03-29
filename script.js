@@ -30,14 +30,16 @@ document.addEventListener('DOMContentLoaded', () => {
     const downloadOriginalBtn = document.getElementById('downloadOriginal');
     
     // --- Настройка Supabase ---
-    // ЗАМЕНИТЕ ЭТИ ДАННЫЕ НА ВАШИ ИЗ SUPABASE PROJECT SETTINGS -> API
     const SUPABASE_URL = 'https://thfeqjkabagcqngvvrke.supabase.co'; 
-    const SUPABASE_KEY = 'thfeqjkabagcqngvvrke';
+    const SUPABASE_KEY = 'thfeqjkabagcqngvvrke'; // <--- ВНИМАНИЕ: это похоже на ID проекта, а не на ANON KEY. 
     let supabase = null;
 
     try {
-        if (SUPABASE_KEY && SUPABASE_KEY !== 'ВСТАВЬТЕ_ВАШ_ANON_KEY_ЗДЕСЬ') {
+        // Если ключ короткий, значит это не Anon Key (он должен быть очень длинным)
+        if (SUPABASE_KEY.length > 30) {
             supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+        } else {
+            console.warn("SUPABASE_KEY слишком короткий. Проверьте Project Settings -> API -> anon public");
         }
     } catch (e) {
         console.error("Supabase init error:", e);
@@ -47,12 +49,16 @@ document.addEventListener('DOMContentLoaded', () => {
     const ADMIN_PASSWORD = "admin";
     let currentZoom = 1;
 
-    // Вход по паролю: при вводе пароля загружаем данные из БД
+    // Вход по паролю
     adminPassword.addEventListener('input', async () => {
         if (adminPassword.value === ADMIN_PASSWORD) {
             adminSection.style.display = 'block';
             adminPassword.blur();
             adminPassword.value = "";
+            if (!supabase) {
+                alert("Ошибка: БД не настроена. Вставьте длинный 'anon public' ключ в script.js");
+                return;
+            }
             statusDiv.textContent = "Синхронизация с облаком...";
             await syncWithCloud();
         } else {
@@ -60,30 +66,45 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // Загрузка файла в БД
+    // Загрузка файла через Storage (чтобы не было Out of Memory)
     fileUploadInput.addEventListener('change', async (e) => {
         const file = e.target.files[0];
         if (!file || !supabase) return;
 
-        const reader = new FileReader();
-        reader.onload = async (event) => {
-            const dataUrl = event.target.result;
-            const fileName = file.name;
-            
-            statusDiv.textContent = "Загрузка в облако...";
-            const { data, error } = await supabase
+        try {
+            statusDiv.textContent = "Загрузка файла в хранилище...";
+            const fileExt = file.name.split('.').pop();
+            const fileName = `${Date.now()}.${fileExt}`;
+            const filePath = `${fileName}`;
+
+            // 1. Загружаем сам файл в бакет 'mosaics'
+            const { data: uploadData, error: uploadError } = await supabase.storage
+                .from('mosaics')
+                .upload(filePath, file);
+
+            if (uploadError) throw uploadError;
+
+            // 2. Получаем публичную ссылку
+            const { data: { publicUrl } } = supabase.storage
+                .from('mosaics')
+                .getPublicUrl(filePath);
+
+            // 3. Сохраняем ссылку в таблицу
+            statusDiv.textContent = "Сохранение записи в таблицу...";
+            const { error: dbError } = await supabase
                 .from('mosaic_results')
-                .insert([{ file_name: fileName, data_url: dataUrl, rating: 0 }]);
-            
-            if (error) {
-                console.error(error);
-                alert("Ошибка загрузки в БД. Проверьте настройки таблицы.");
-            } else {
-                await syncWithCloud();
-            }
+                .insert([{ file_name: file.name, data_url: publicUrl, rating: 0 }]);
+
+            if (dbError) throw dbError;
+
+            await syncWithCloud();
+            statusDiv.textContent = "Успешно загружено!";
+        } catch (error) {
+            console.error(error);
+            alert("Ошибка: " + (error.message || "Не удалось загрузить. Проверьте, создан ли бакет 'mosaics' и открыты ли права (Policies)."));
+        } finally {
             fileUploadInput.value = "";
-        };
-        reader.readAsDataURL(file);
+        }
     });
 
     async function syncWithCloud() {
