@@ -21,36 +21,83 @@ document.addEventListener('DOMContentLoaded', () => {
     const fileUploadInput = document.getElementById('userFileUpload');
     const resultsList = document.getElementById('uploadedResultsList');
     
-    // Simple state for demo (in production this would be a database)
-    let uploadedResults = [];
-    const ADMIN_PASSWORD = "admin"; // Пароль
+    // Modal Elements
+    const modal = document.getElementById('fullscreenModal');
+    const modalImg = document.getElementById('modalImg');
+    const closeModal = document.querySelector('.close-modal');
+    const zoomInBtn = document.getElementById('zoomIn');
+    const zoomOutBtn = document.getElementById('zoomOut');
+    const downloadOriginalBtn = document.getElementById('downloadOriginal');
+    
+    // --- Настройка Supabase ---
+    // ЗАМЕНИТЕ ЭТИ ДАННЫЕ НА ВАШИ ИЗ SUPABASE PROJECT SETTINGS -> API
+    const SUPABASE_URL = 'ВАШ_URL_ИЗ_SUPABASE'; 
+    const SUPABASE_KEY = 'ВАШ_КЛЮЧ_ИЗ_SUPABASE';
+    let supabase = null;
 
-    adminPassword.addEventListener('input', () => {
+    if (SUPABASE_URL !== 'ВАШ_URL_ИЗ_SUPABASE') {
+        supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+    }
+    
+    let uploadedResults = [];
+    const ADMIN_PASSWORD = "admin";
+    let currentZoom = 1;
+
+    // Вход по паролю: при вводе пароля загружаем данные из БД
+    adminPassword.addEventListener('input', async () => {
         if (adminPassword.value === ADMIN_PASSWORD) {
             adminSection.style.display = 'block';
             adminPassword.blur();
             adminPassword.value = "";
-            renderUploadedResults();
+            statusDiv.textContent = "Синхронизация с облаком...";
+            await syncWithCloud();
         } else {
             adminSection.style.display = 'none';
         }
     });
 
-    fileUploadInput.addEventListener('change', (e) => {
+    // Загрузка файла в БД
+    fileUploadInput.addEventListener('change', async (e) => {
         const file = e.target.files[0];
-        if (!file) return;
+        if (!file || !supabase) return;
 
         const reader = new FileReader();
-        reader.onload = (event) => {
-            const id = Date.now();
+        reader.onload = async (event) => {
             const dataUrl = event.target.result;
             const fileName = file.name;
-            uploadedResults.push({ id, dataUrl, fileName, rating: 0 });
-            renderUploadedResults();
+            
+            statusDiv.textContent = "Загрузка в облако...";
+            const { data, error } = await supabase
+                .from('mosaic_results')
+                .insert([{ file_name: fileName, data_url: dataUrl, rating: 0 }]);
+            
+            if (error) {
+                console.error(error);
+                alert("Ошибка загрузки в БД. Проверьте настройки таблицы.");
+            } else {
+                await syncWithCloud();
+            }
             fileUploadInput.value = "";
         };
         reader.readAsDataURL(file);
     });
+
+    async function syncWithCloud() {
+        if (!supabase) {
+            statusDiv.textContent = "БД не настроена. Используйте URL/Ключ в коде.";
+            return;
+        }
+        const { data, error } = await supabase
+            .from('mosaic_results')
+            .select('*')
+            .order('created_at', { ascending: false });
+        
+        if (!error) {
+            uploadedResults = data;
+            renderUploadedResults();
+            statusDiv.textContent = "Данные обновлены из облака.";
+        }
+    }
 
     function renderUploadedResults() {
         if (uploadedResults.length === 0) {
@@ -63,10 +110,10 @@ document.addEventListener('DOMContentLoaded', () => {
             const div = document.createElement('div');
             div.className = 'result-item';
             div.innerHTML = `
-                <img src="${item.dataUrl}" alt="Result Preview">
-                <div class="item-name">${item.fileName}</div>
+                <img src="${item.data_url}" alt="Preview" onclick="openFullscreen('${item.data_url}')">
+                <div class="item-name" style="font-size: 0.7rem; margin-bottom: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${item.file_name}</div>
                 <div class="item-actions">
-                    <span class="rate-btn" onclick="rateItem(${item.id})">★ ${item.rating}</span>
+                    <span class="rate-btn" onclick="rateItem(${item.id}, ${item.rating})">★ ${item.rating}</span>
                     <button class="delete-btn" onclick="deleteItem(${item.id})">Удалить</button>
                 </div>
             `;
@@ -74,19 +121,52 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // Глобальные функции для кнопок в списке
-    window.rateItem = (id) => {
-        const item = uploadedResults.find(i => i.id === id);
-        if (item) {
-            item.rating++;
-            renderUploadedResults();
-        }
+    // Modal Logic (без изменений)
+    window.openFullscreen = (src) => {
+        modalImg.src = src;
+        modal.style.display = "block";
+        currentZoom = 1;
+        updateZoom();
+    };
+    
+    closeModal.onclick = () => modal.style.display = "none";
+    window.onclick = (event) => { if (event.target == modal) modal.style.display = "none"; };
+    function updateZoom() { modalImg.style.transform = `scale(${currentZoom})`; }
+    zoomInBtn.onclick = () => { currentZoom += 0.5; updateZoom(); };
+    zoomOutBtn.onclick = () => { if (currentZoom > 0.5) currentZoom -= 0.5; updateZoom(); };
+
+    modalImg.onwheel = (e) => {
+        e.preventDefault();
+        if (e.deltaY < 0) currentZoom += 0.2;
+        else if (currentZoom > 0.2) currentZoom -= 0.2;
+        updateZoom();
     };
 
-    window.deleteItem = (id) => {
-        if (confirm("Удалить этот результат?")) {
-            uploadedResults = uploadedResults.filter(i => i.id !== id);
-            renderUploadedResults();
+    downloadOriginalBtn.onclick = () => {
+        const link = document.createElement('a');
+        link.href = modalImg.src;
+        link.download = "mosaic_result_" + Date.now();
+        link.click();
+    };
+
+    // Global Actions в БД
+    window.rateItem = async (id, currentRating) => {
+        if (!supabase) return;
+        const { error } = await supabase
+            .from('mosaic_results')
+            .update({ rating: currentRating + 1 })
+            .eq('id', id);
+        if (!error) await syncWithCloud();
+    };
+
+    window.deleteItem = async (id) => {
+        if (!supabase) return;
+        if (confirm("Удалить этот результат из облака навсегда?")) {
+            const { error } = await supabase
+                .from('mosaic_results')
+                .delete()
+                .eq('id', id);
+            if (!error) await syncWithCloud();
         }
     };
 

@@ -91,6 +91,20 @@
         <input type="password" id="adminPassword" placeholder="..." title="Админ-панель">
     </div>
 
+    <!-- Модальное окно для полноэкранного просмотра -->
+    <div id="fullscreenModal" class="modal">
+        <span class="close-modal">&times;</span>
+        <div class="modal-content-wrapper">
+            <img id="modalImg" class="modal-content" src="" alt="Fullscreen">
+        </div>
+        <div class="modal-controls">
+            <button id="zoomIn">+</button>
+            <button id="zoomOut">-</button>
+            <button id="downloadOriginal">Скачать</button>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="script.js"></script>
 </body>
 </html>
