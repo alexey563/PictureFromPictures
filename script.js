@@ -255,15 +255,24 @@ document.addEventListener('DOMContentLoaded', () => {
         const metadata = [];
 
         for (const item of uploadedResults) {
-            let fileToPack = item.file;
+            // Исправляем: если в БД старые данные, берем их
+            let fileToPack = item.file || item.dataUrl;
+            if (!fileToPack) continue;
+
+            // Конвертируем строку в Blob если нужно
+            if (typeof fileToPack === "string") {
+                const res = await fetch(fileToPack);
+                fileToPack = await res.blob();
+            }
+
             const fileExt = item.fileName.split('.').pop().toLowerCase();
             let storageName = `${item.id}.${fileExt}`;
             
-            // Если файл тяжелее 20МБ и это не SVG — сжимаем его в WebP для архива
-            if (item.file.size > 20 * 1024 * 1024 && fileExt !== 'svg') {
+            // Если файл тяжелее 20МБ и это не SVG — сжимаем его в WebP
+            if (fileToPack instanceof Blob && fileToPack.size > 20 * 1024 * 1024 && fileExt !== 'svg') {
                 statusDiv.textContent = `Оптимизация: ${item.fileName}...`;
-                const compressed = await shrinkImage(item.file);
-                if (compressed && compressed.size < item.file.size) {
+                const compressed = await shrinkImage(fileToPack);
+                if (compressed && compressed.size < fileToPack.size) {
                     fileToPack = compressed;
                     storageName = `${item.id}.webp`;
                 }
@@ -281,7 +290,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
         zip.file("metadata.json", JSON.stringify(metadata));
 
-        // Используем максимальное сжатие DEFLATE
         const content = await zip.generateAsync({ 
             type: "blob",
             compression: "DEFLATE",
