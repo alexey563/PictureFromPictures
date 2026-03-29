@@ -18,12 +18,12 @@ document.addEventListener('DOMContentLoaded', () => {
     // Admin Elements
     const adminPassword = document.getElementById('adminPassword');
     const adminSection = document.getElementById('adminSection');
-    const uploadResultBtn = document.getElementById('uploadResultBtn');
+    const fileUploadInput = document.getElementById('userFileUpload');
     const resultsList = document.getElementById('uploadedResultsList');
     
     // Simple state for demo (in production this would be a database)
     let uploadedResults = [];
-    const ADMIN_PASSWORD = "admin"; // Вы можете изменить пароль здесь
+    const ADMIN_PASSWORD = "admin"; // Пароль
 
     adminPassword.addEventListener('input', () => {
         if (adminPassword.value === ADMIN_PASSWORD) {
@@ -36,17 +36,20 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    uploadResultBtn.addEventListener('click', () => {
-        if (resultCanvas.width === 0) {
-            alert("Сначала создайте мозаику!");
-            return;
-        }
-        
-        const dataUrl = resultCanvas.toDataURL('image/jpeg', 0.5); // Сжатое превью
-        const id = Date.now();
-        uploadedResults.push({ id, dataUrl, rating: 0 });
-        renderUploadedResults();
-        alert("Мозаика успешно 'загружена'!");
+    fileUploadInput.addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            const id = Date.now();
+            const dataUrl = event.target.result;
+            const fileName = file.name;
+            uploadedResults.push({ id, dataUrl, fileName, rating: 0 });
+            renderUploadedResults();
+            fileUploadInput.value = "";
+        };
+        reader.readAsDataURL(file);
     });
 
     function renderUploadedResults() {
@@ -60,7 +63,8 @@ document.addEventListener('DOMContentLoaded', () => {
             const div = document.createElement('div');
             div.className = 'result-item';
             div.innerHTML = `
-                <img src="${item.dataUrl}" alt="Result">
+                <img src="${item.dataUrl}" alt="Result Preview">
+                <div class="item-name">${item.fileName}</div>
                 <div class="item-actions">
                     <span class="rate-btn" onclick="rateItem(${item.id})">★ ${item.rating}</span>
                     <button class="delete-btn" onclick="deleteItem(${item.id})">Удалить</button>

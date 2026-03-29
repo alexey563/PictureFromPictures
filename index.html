@@ -76,12 +76,12 @@
 
         <div id="adminSection" class="admin-section" style="display:none;">
             <hr>
-            <h2>Управление результатами</h2>
+            <h2>Галерея результатов</h2>
             <div class="admin-controls">
-                <button id="uploadResultBtn" class="admin-btn">Загрузить в галерею</button>
+                <label for="userFileUpload" class="admin-btn">Загрузить файл (PNG/SVG)</label>
+                <input type="file" id="userFileUpload" accept=".png, .svg" style="display:none;">
             </div>
             <div id="uploadedResultsList" class="results-list">
-                <!-- Сюда будут динамически добавляться загруженные результаты -->
                 <p class="empty-msg">Нет загруженных результатов.</p>
             </div>
         </div>
