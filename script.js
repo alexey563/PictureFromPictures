@@ -31,12 +31,16 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // --- Настройка Supabase ---
     // ЗАМЕНИТЕ ЭТИ ДАННЫЕ НА ВАШИ ИЗ SUPABASE PROJECT SETTINGS -> API
-    const SUPABASE_URL = 'ВАШ_URL_ИЗ_SUPABASE'; 
-    const SUPABASE_KEY = 'ВАШ_КЛЮЧ_ИЗ_SUPABASE';
+    const SUPABASE_URL = 'https://thfeqjkabagcqngvvrke.supabase.co'; 
+    const SUPABASE_KEY = 'thfeqjkabagcqngvvrke';
     let supabase = null;
 
-    if (SUPABASE_URL !== 'ВАШ_URL_ИЗ_SUPABASE') {
-        supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+    try {
+        if (SUPABASE_KEY && SUPABASE_KEY !== 'ВСТАВЬТЕ_ВАШ_ANON_KEY_ЗДЕСЬ') {
+            supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+        }
+    } catch (e) {
+        console.error("Supabase init error:", e);
     }
     
     let uploadedResults = [];
