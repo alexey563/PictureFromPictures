@@ -246,22 +246,30 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
-    // --- Экспорт / Импорт через ZIP (Решает проблему Out of Memory) ---
+    // --- Экспорт / Импорт через ZIP (С ОПТИМИЗАЦИЕЙ РАЗМЕРА) ---
     document.getElementById('exportGallery').onclick = async () => {
         if (uploadedResults.length === 0) return alert("Галерея пуста");
         
-        statusDiv.textContent = "Создание ZIP-архива... Подождите.";
+        statusDiv.textContent = "Создание сжатого ZIP-архива... Это может занять пару минут.";
         const zip = new JSZip();
         const metadata = [];
 
         for (const item of uploadedResults) {
-            const fileExt = item.fileName.split('.').pop();
-            const storageName = `${item.id}.${fileExt}`;
+            let fileToPack = item.file;
+            const fileExt = item.fileName.split('.').pop().toLowerCase();
+            let storageName = `${item.id}.${fileExt}`;
             
-            // Добавляем саму картинку в ZIP как бинарный файл
-            zip.file(`images/${storageName}`, item.file);
-            
-            // Сохраняем метаданные (имя, рейтинг, превью)
+            // Если файл тяжелее 20МБ и это не SVG — сжимаем его в WebP для архива
+            if (item.file.size > 20 * 1024 * 1024 && fileExt !== 'svg') {
+                statusDiv.textContent = `Оптимизация: ${item.fileName}...`;
+                const compressed = await shrinkImage(item.file);
+                if (compressed && compressed.size < item.file.size) {
+                    fileToPack = compressed;
+                    storageName = `${item.id}.webp`;
+                }
+            }
+
+            zip.file(`images/${storageName}`, fileToPack);
             metadata.push({
                 id: item.id,
                 fileName: item.fileName,
@@ -273,13 +281,35 @@ document.addEventListener('DOMContentLoaded', () => {
 
         zip.file("metadata.json", JSON.stringify(metadata));
 
-        const content = await zip.generateAsync({ type: "blob" });
+        // Используем максимальное сжатие DEFLATE
+        const content = await zip.generateAsync({ 
+            type: "blob",
+            compression: "DEFLATE",
+            compressionOptions: { level: 9 }
+        });
+
         const a = document.createElement('a');
         a.href = URL.createObjectURL(content);
-        a.download = `mosaic_gallery_${Date.now()}.zip`;
+        a.download = `mosaic_gallery_optimized_${Date.now()}.zip`;
         a.click();
-        statusDiv.textContent = "Архив ZIP успешно создан.";
+        statusDiv.textContent = "Оптимизированный ZIP-архив создан.";
     };
+
+    async function shrinkImage(blob) {
+        try {
+            const bitmap = await createImageBitmap(blob);
+            const canvas = document.createElement('canvas');
+            canvas.width = bitmap.width;
+            canvas.height = bitmap.height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(bitmap, 0, 0);
+            bitmap.close();
+            return new Promise(r => canvas.toBlob(r, 'image/webp', 0.8)); // 80% качество WebP
+        } catch (e) {
+            console.warn("Сжатие не удалось:", e);
+            return blob;
+        }
+    }
 
     document.getElementById('importGalleryInput').onchange = async (e) => {
         const file = e.target.files[0];
@@ -298,24 +328,23 @@ document.addEventListener('DOMContentLoaded', () => {
                 statusDiv.textContent = `Импорт: ${item.fileName}...`;
                 const imageFile = await zip.file(`images/${item.storageName}`).async("blob");
                 
-                const entry = {
+                store.put({
                     id: item.id,
                     fileName: item.fileName,
                     rating: item.rating,
                     thumbUrl: item.thumbUrl,
                     file: imageFile
-                };
-                store.put(entry);
+                });
             }
 
             tx.oncomplete = () => {
                 loadFromLocal();
-                alert("Импорт из ZIP завершен успешно!");
+                alert("Импорт завершен! Тяжелые файлы были автоматически оптимизированы.");
                 statusDiv.textContent = "Готово.";
             };
         } catch (err) {
             console.error(err);
-            alert("Ошибка при чтении ZIP-архива. Возможно, файл поврежден.");
+            alert("Ошибка при чтении архива.");
         }
         e.target.value = "";
     };
