@@ -250,16 +250,16 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('exportGallery').onclick = async () => {
         if (uploadedResults.length === 0) return alert("Галерея пуста");
         
-        statusDiv.textContent = "Создание сжатого ZIP-архива... Это может занять пару минут.";
+        generateBtn.disabled = true;
+        statusDiv.textContent = "Начало архивации... Подождите.";
         const zip = new JSZip();
         const metadata = [];
 
-        for (const item of uploadedResults) {
-            // Исправляем: если в БД старые данные, берем их
+        for (let i = 0; i < uploadedResults.length; i++) {
+            const item = uploadedResults[i];
             let fileToPack = item.file || item.dataUrl;
             if (!fileToPack) continue;
 
-            // Конвертируем строку в Blob если нужно
             if (typeof fileToPack === "string") {
                 const res = await fetch(fileToPack);
                 fileToPack = await res.blob();
@@ -268,13 +268,16 @@ document.addEventListener('DOMContentLoaded', () => {
             const fileExt = item.fileName.split('.').pop().toLowerCase();
             let storageName = `${item.id}.${fileExt}`;
             
-            // Если файл тяжелее 20МБ и это не SVG — сжимаем его в WebP
-            if (fileToPack instanceof Blob && fileToPack.size > 20 * 1024 * 1024 && fileExt !== 'svg') {
-                statusDiv.textContent = `Оптимизация: ${item.fileName}...`;
+            // Если файл тяжелее 15МБ — сжимаем
+            if (fileToPack instanceof Blob && fileToPack.size > 15 * 1024 * 1024 && fileExt !== 'svg') {
+                statusDiv.textContent = `Сжатие (${i+1}/${uploadedResults.length}): ${item.fileName}...`;
+                // Даем браузеру обновить UI
+                await new Promise(r => setTimeout(r, 100));
+                
                 const compressed = await shrinkImage(fileToPack);
                 if (compressed && compressed.size < fileToPack.size) {
                     fileToPack = compressed;
-                    storageName = `${item.id}.webp`;
+                    storageName = `${item.id}.jpg`;
                 }
             }
 
@@ -288,31 +291,53 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         }
 
+        statusDiv.textContent = "Финальная упаковка архива (DEFLATE)...";
+        await new Promise(r => setTimeout(r, 100));
+        
         zip.file("metadata.json", JSON.stringify(metadata));
 
         const content = await zip.generateAsync({ 
             type: "blob",
             compression: "DEFLATE",
-            compressionOptions: { level: 9 }
+            compressionOptions: { level: 6 } // 6 — золотая середина скорости и размера
         });
 
         const a = document.createElement('a');
         a.href = URL.createObjectURL(content);
-        a.download = `mosaic_gallery_optimized_${Date.now()}.zip`;
+        a.download = `mosaic_gallery_ready_${Date.now()}.zip`;
         a.click();
-        statusDiv.textContent = "Оптимизированный ZIP-архив создан.";
+        
+        statusDiv.textContent = "Готово! Архив скачан.";
+        generateBtn.disabled = false;
     };
 
     async function shrinkImage(blob) {
         try {
             const bitmap = await createImageBitmap(blob);
+            
+            // Безопасный лимит для Canvas — 12000px. 
+            // Этого хватит для печати в очень большом формате.
+            const MAX_DIM = 12000;
+            let width = bitmap.width;
+            let height = bitmap.height;
+            
+            if (width > MAX_DIM || height > MAX_DIM) {
+                const scale = MAX_DIM / Math.max(width, height);
+                width = Math.round(width * scale);
+                height = Math.round(height * scale);
+            }
+
             const canvas = document.createElement('canvas');
-            canvas.width = bitmap.width;
-            canvas.height = bitmap.height;
+            canvas.width = width;
+            canvas.height = height;
             const ctx = canvas.getContext('2d');
-            ctx.drawImage(bitmap, 0, 0);
+            
+            // Рисуем частями или целиком (createImageBitmap делает это эффективно)
+            ctx.drawImage(bitmap, 0, 0, width, height);
             bitmap.close();
-            return new Promise(r => canvas.toBlob(r, 'image/webp', 0.8)); // 80% качество WebP
+            
+            // JPEG с качеством 0.75 сжимает 300МБ до 15-25МБ почти без потерь для глаза
+            return new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.75)); 
         } catch (e) {
             console.warn("Сжатие не удалось:", e);
             return blob;
